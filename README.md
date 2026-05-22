@@ -1,4 +1,4 @@
-# FB Lead Monitor
+# Facebook Groups Monitor
 
 Every day, potential clients post in Facebook groups asking for exactly what you offer — *"looking for a good accountant"*, *"anyone know a reliable bookkeeper?"* — and most of those posts go unanswered within the hour. The person picks whoever replies first.
 
