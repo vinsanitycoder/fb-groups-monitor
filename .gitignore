@@ -1,0 +1,7 @@
+node_modules/
+session/
+data/
+logs/
+.env
+google-credentials.json
+HANDOFF.md

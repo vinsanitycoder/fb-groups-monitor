@@ -1,0 +1,29 @@
+node_modules/
+.next/
+dist/
+build/
+*.lock
+package-lock.json
+yarn.lock
+*.min.js
+*.map
+coverage/
+
+# Credentials — never read these
+.env
+.env.*
+*credentials*.json
+*service-account*.json
+
+# Facebook session — contains active login, sensitive
+session/
+
+# Deduplication cache — large after time, not needed for code context
+data/
+
+# Logs — runtime output, not source code
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
