@@ -97,11 +97,18 @@ async function main() {
     // ── 1. Load config from Sheets ──────────────────────────────────────────
     console.log('[index] Loading config from Google Sheets...');
     const sheetConfig = await loadConfig();
-    const { keywords, groups, signalPhrases, disqualifiers, competitorSignals, fbPageUrl, linkProbability, systemPrompt, monitorEnabled, commentAlertThreshold, likeAlertThreshold } = sheetConfig;
+    const { keywords, groups, signalPhrases, disqualifiers, competitorSignals, fbPageUrl, linkProbability, systemPrompt, monitorEnabled, businessHoursStart, businessHoursEnd, commentAlertThreshold, likeAlertThreshold } = sheetConfig;
     console.log(`[index] Config loaded — ${groups.length} group(s), ${keywords.length} keywords`);
 
     if (!monitorEnabled) {
       console.log('[index] Monitor disabled in Google Sheet. Exiting.');
+      return;
+    }
+
+    // Sheet-configured business hours (secondary check — top-level check uses
+    // hardcoded 8/21 as a fast exit; this enforces the user's sheet values).
+    if (process.env.TEST_MODE !== '1' && (hour < businessHoursStart || hour >= businessHoursEnd)) {
+      console.log(`[index] Outside sheet-configured business hours (${hour}:xx, sheet: ${businessHoursStart}–${businessHoursEnd}). Exiting.`);
       return;
     }
 
@@ -205,8 +212,10 @@ async function main() {
           continue;
         }
 
-        // Engagement filter — must have ≥3 likes OR ≥3 comments
-        if (post.likeCount < 3 && post.commentCount < 3) {
+        // Engagement filter — must have ≥3 likes OR ≥3 comments.
+        // Skip this check for posts already identified as high-activity
+        // (isHighActivity uses the sheet-configured thresholds which can be < 3).
+        if (!isHighActivity && post.likeCount < 3 && post.commentCount < 3) {
           console.log(`[index] SKIP (low engagement — ${post.likeCount} likes, ${post.commentCount} comments): ${post.text.slice(0, 60)}`);
           continue;
         }
@@ -294,7 +303,7 @@ async function main() {
         summary.leadsLogged++;
 
         // 3-second rate limit between consecutive Teams posts
-        if (summary.leadsLogged > 1) {
+        if (summary.leadsLogged >= 1) {
           await wait(3000);
         }
       }
