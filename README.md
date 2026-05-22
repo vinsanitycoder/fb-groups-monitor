@@ -1,8 +1,8 @@
 # Facebook Groups Monitor
 
-Every day, potential clients post in Facebook groups asking for exactly what you offer — *"looking for a good accountant"*, *"anyone know a reliable bookkeeper?"* — and most of those posts go unanswered within the hour. The person picks whoever replies first.
+Every day, people are posting in Facebook groups, we found that if we respond quickly to relevant questions or are there at the moment people need us then we can very effectively build a brand and also gain new clients. This also means you need to be the first few to respond. 
 
-This tool watches those groups for you, around the clock. The moment a matching post appears, your team gets a Teams notification with a direct link to the post and an AI-drafted reply ready to send. No more manually checking Facebook. No more missed leads.
+This tool watches those groups for you, around the clock or for a certain time period you set. The moment a post appears that satisfies your criteria, your team gets a Teams notification card with a direct link to the post and an AI-drafted reply ready to send. Our team uses this solely now and there's no more missed leads. You will still need to tweak your own criteria, like keywords and phrases or negative lists to refine. But this has been amazing for our own team and I couldn't find something like this previously. So I want to release this so more people can use this and try it out.
 
 **It takes about an hour to set up. After that, it runs on its own.**
 
@@ -11,7 +11,7 @@ This tool watches those groups for you, around the clock. The moment a matching 
 ## What it does
 
 - Checks your list of Facebook groups every 30 minutes during business hours
-- Spots posts that match your keywords — you control the list (e.g. "need accountant", "BIR registration", "looking for bookkeeper")
+- Spots posts that match your keywords — you control the list (e.g. "need accountant", "looking for bookkeeper", "looking for SEO specialist")
 - Ignores ads, job postings, and spam automatically — you control what to filter out
 - Sends your team a Teams alert the moment a real lead is found, with a direct link to the post
 - Drafts a personalised reply using AI — your team reviews it, edits if needed, and posts it from their own Facebook account
@@ -67,7 +67,8 @@ Create a new Google Sheet. It needs the following tabs — the names must match 
 ```
 looking for accountant
 need bookkeeper
-BIR registration
+SEO
+Marketer
 ```
 
 **Groups** — one Facebook group URL per row in column A. Use numeric group IDs, not vanity URLs. Example:
@@ -76,7 +77,7 @@ https://www.facebook.com/groups/123456789
 https://www.facebook.com/groups/987654321
 ```
 
-**Signal Phrases** — reserved for future use, leave empty for now or add phrases that indicate buying intent.
+**Signal Phrases** — add phrases that indicate buying intent.
 
 **Disqualifiers** — one word or phrase per row in column A. Posts containing any of these are skipped. Example:
 ```
