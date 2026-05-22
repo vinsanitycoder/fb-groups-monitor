@@ -1,0 +1,21 @@
+{
+  "name": "fb-lead-monitor",
+  "version": "1.0.0",
+  "description": "Monitors Facebook groups for service leads, logs to Google Sheets, generates AI drafts, and alerts via Microsoft Teams.",
+  "main": "src/index.js",
+  "license": "MIT",
+  "keywords": ["facebook", "lead-generation", "microsoft-teams", "google-sheets", "claude", "automation", "playwright"],
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node scripts/login.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.5",
+    "googleapis": "^140.0.0",
+    "node-fetch": "^3.3.2",
+    "playwright": "^1.60.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
