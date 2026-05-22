@@ -1,20 +1,22 @@
 # FB Lead Monitor
 
-Automatically scans Facebook groups for people asking about your services, logs leads to Google Sheets, generates AI draft replies via Claude, and sends real-time alerts to Microsoft Teams.
+Every day, potential clients post in Facebook groups asking for exactly what you offer — *"looking for a good accountant"*, *"anyone know a reliable bookkeeper?"* — and most of those posts go unanswered within the hour. The person picks whoever replies first.
 
-Runs on a schedule (every 30 minutes by default). Works on Mac and Windows. No coding knowledge needed to operate.
+This tool watches those groups for you, around the clock. The moment a matching post appears, your team gets a Teams notification with a direct link to the post and an AI-drafted reply ready to send. No more manually checking Facebook. No more missed leads.
+
+**It takes about an hour to set up. After that, it runs on its own.**
 
 ---
 
 ## What it does
 
-- Monitors any list of Facebook groups you configure
-- Detects posts matching your keywords (e.g. "looking for accountant", "need bookkeeper")
-- Filters out ads, spam, and promotional posts using disqualifiers you control
-- Logs every lead to a Google Sheet with the post text, group name, and a timestamp
-- Generates a short AI reply draft using Claude Haiku
-- Sends a Teams card with the draft, engagement stats, and a direct link to the post
-- Deduplicates across groups and across runs — the same lead is never sent twice
+- Checks your list of Facebook groups every 30 minutes during business hours
+- Spots posts that match your keywords — you control the list (e.g. "need accountant", "BIR registration", "looking for bookkeeper")
+- Ignores ads, job postings, and spam automatically — you control what to filter out
+- Sends your team a Teams alert the moment a real lead is found, with a direct link to the post
+- Drafts a personalised reply using AI — your team reviews it, edits if needed, and posts it from their own Facebook account
+- Saves every lead to a Google Sheet automatically — post text, group, timestamp, and the draft reply
+- Never alerts you about the same post twice, even if it appears in multiple groups
 
 ---
 
