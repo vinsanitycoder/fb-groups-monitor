@@ -14,6 +14,7 @@ const { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert } = require('./t
 const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen, isUrlDuplicate, markUrlSeen } = require('./utils/dedup');
 const { acquireLock, releaseLock } = require('./utils/lock');
 const { writeRunSummary } = require('./utils/logger');
+const { loadGroupState, saveGroupState } = require('./utils/groupstate');
 
 const MAX_GROUPS_PER_RUN = 15;
 const ZERO_POSTS_LIMIT = 3;
@@ -80,6 +81,34 @@ function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// Convert a post's postedAt field to a Date for last-run comparison.
+// Returns null when the timestamp is absent or in an unrecognised format —
+// callers treat null as "include this post" to avoid missing real leads.
+function parsePostTime(postedAt, runStartMs) {
+  if (!postedAt) return null;
+  // ISO timestamp from GraphQL — most reliable
+  if (/^\d{4}-\d{2}-\d{2}T/.test(postedAt)) {
+    const d = new Date(postedAt);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // DOM relative labels: "36m", "2h", "1d"
+  let m;
+  if ((m = postedAt.match(/^(\d+)\s*m$/i))) return new Date(runStartMs - parseInt(m[1]) * 60 * 1000);
+  if ((m = postedAt.match(/^(\d+)\s*h$/i))) return new Date(runStartMs - parseInt(m[1]) * 60 * 60 * 1000);
+  if ((m = postedAt.match(/^(\d+)\s*d$/i))) return new Date(runStartMs - parseInt(m[1]) * 24 * 60 * 60 * 1000);
+  // "Monday at 3:00 PM" and similar — too ambiguous to parse safely, include the post
+  return null;
+}
+
+// Returns true if this post should be processed: either we have no last-seen
+// time for this group, or the post's timestamp is after that cutoff.
+function isPostNewSinceLastRun(post, lastSeenIso, runStartMs) {
+  if (!lastSeenIso) return true;
+  const postTime = parsePostTime(post.postedAt, runStartMs);
+  if (!postTime) return true; // can't determine age — include to avoid missing leads
+  return postTime > new Date(lastSeenIso);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const startTime = Date.now();
@@ -96,6 +125,7 @@ async function main() {
 
   let browser = null;
   let dedupCache = null;
+  let groupState = null;
 
   try {
     // ── 0. Startup alert (first run of the day only) ────────────────────────
@@ -129,9 +159,11 @@ async function main() {
       return;
     }
 
-    // ── 2. Load dedup cache ─────────────────────────────────────────────────
+    // ── 2. Load dedup cache + group state ──────────────────────────────────
     dedupCache = loadDedup();
     console.log(`[index] Dedup cache loaded — ${Object.keys(dedupCache).length} known posts`);
+    groupState = loadGroupState();
+    console.log(`[index] Group state loaded — ${Object.keys(groupState).length} group(s) with last-seen timestamps`);
 
     // ── 3. Login ────────────────────────────────────────────────────────────
     const sessionPath = getSessionPath();
@@ -215,6 +247,18 @@ async function main() {
       }
 
       summary.postsFound += posts.length;
+
+      // ── Last-run filter — skip posts older than the previous scrape of this group ──
+      // Uses raw post count above so zero-posts detection is unaffected.
+      // Posts with no parseable timestamp pass through (safe side: never drop a lead).
+      if (groupState[groupUrl]) {
+        const before = posts.length;
+        posts = posts.filter(p => isPostNewSinceLastRun(p, groupState[groupUrl], startTime));
+        const skipped = before - posts.length;
+        if (skipped > 0) {
+          console.log(`[index] Skipped ${skipped} post(s) from before last run (last: ${groupState[groupUrl]})`);
+        }
+      }
 
       // ── 5. Filter + dedup + pipeline ──────────────────────────────────────
       for (const post of posts) {
@@ -336,6 +380,11 @@ async function main() {
         }
       }
 
+      // ── Update this group's last-seen to this run's start time ───────────
+      // Only reached on a successful scrape — error paths use continue/throw
+      // and never update, so the next run will re-check from the old cutoff.
+      groupState[groupUrl] = new Date(startTime).toISOString();
+
       // ── Delay between groups (45–90s, human-like) ─────────────────────────
       if (i < targetGroups.length - 1) {
         const delayMs = randInt(45000, 90000);
@@ -361,6 +410,10 @@ async function main() {
     if (dedupCache) {
       saveDedup(dedupCache);
       console.log('[index] Dedup cache saved');
+    }
+    if (groupState) {
+      saveGroupState(groupState);
+      console.log('[index] Group state saved');
     }
     releaseLock();
   }
