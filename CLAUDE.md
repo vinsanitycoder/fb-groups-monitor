@@ -49,6 +49,9 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Claude Haiku only** — no Sonnet. Prompt caching not implemented (Haiku minimum is 1,024 tokens; our prompt is ~35 tokens — below threshold).
 - **Two-layer filter before Claude** — keyword match AND signal phrase match required. Claude never called on noise.
 - **Five-layer deduplication** — `seen_posts.json` stores post ID, SHA-1 of text, and SHA-1 of URL (cross-run). In-memory per run: URL Set + Jaccard similarity (85% word overlap). `data/group_state.json` stores last-seen timestamp per group; posts older than the previous scrape of that group are filtered before the pipeline. This covers DOM vs GraphQL ID format differences, near-identical text, and repeat alerts across runs.
+- **Sheets write uses `RAW` not `USER_ENTERED`** — prevents formula injection when Facebook post text (e.g. `=IMPORTDATA(...)`) is written to the Leads tab. Never revert this.
+- **Atomic lock file (`wx` flag)** — `acquireLock()` uses `{ flag: 'wx' }` (O_EXCL) for an atomic exclusive create. Eliminates the TOCTOU race where two processes could both pass an `existsSync` check before either wrote the file.
+- **Prompt injection guards in `draft.js`** — post text is scrubbed for instruction-override phrases before reaching Claude; any draft containing an unexpected URL is discarded. Do not remove these guards.
 
 ## Tech Stack
 - Runtime: Node.js (current LTS)
@@ -118,7 +121,9 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **GraphQL `creation_time` — do NOT use `findDeep(obj, 'creation_time')` on the full Story object.** Nested linked articles have their own `creation_time`; findDeep returns the wrong one (months off, no error). Always search `comet_sections.timestamp` subtree first: `findDeep(obj.comet_sections?.timestamp ?? obj, 'creation_time')`.
 - **DOM vs GraphQL post IDs use different formats** — DOM gives numeric IDs; GraphQL gives BASE64 IDs. The same post will never match on ID alone across extraction methods. Mitigated by: (1) scraper merge filters by both ID and URL, (2) cross-run URL SHA-1 dedup in `seen_posts.json` catches re-surfacing posts regardless of which extraction method finds them.
 - **Lock file cleanup** — if script is killed mid-run, lock file remains. Startup checks lock age: if older than 25 minutes, treats as stale and deletes it.
-- **Claude fallback** — if Claude fails after 2 retries, send Teams alert with "Draft unavailable" message. Never drop a lead because Claude is down.
+- **Claude fallback** — if Claude fails after 2 retries, send Teams alert with "Draft unavailable" message. Never drop a lead because Claude is down. Same fallback fires if a draft is discarded due to prompt injection detection.
+- **Formula injection** — `appendLead` uses `valueInputOption: 'RAW'`. Do NOT change this back to `USER_ENTERED`. Facebook post text starting with `=`, `+`, or `-` would execute as a formula in the Leads tab.
+- **Prompt injection guards** — `draft.js` strips instruction-override phrases and rejects drafts containing unexpected URLs. Do not remove. The `Claude System Prompt` sheet value is capped at 500 chars in `loadConfig` — values beyond that are truncated with a warning log.
 - **Session expired handling** — `ensureLoggedIn` throws `SESSION_EXPIRED`. `index.js` catches it and sends a detailed Teams card with step-by-step re-login instructions. Do NOT add auto-login back.
 - **Mac Energy Saver** — must be set to never sleep on power adapter. If not set, cron runs are silently skipped.
 
