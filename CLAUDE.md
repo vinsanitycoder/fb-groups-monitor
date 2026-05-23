@@ -47,7 +47,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Sequential group scraping** — never parallel tabs. More human-like, less detectable by Facebook.
 - **Claude Haiku only** — no Sonnet. Prompt caching not implemented (Haiku minimum is 1,024 tokens; our prompt is ~35 tokens — below threshold).
 - **Two-layer filter before Claude** — keyword match AND signal phrase match required. Claude never called on noise.
-- **Post ID deduplication** — extract numeric post ID from URL, not full URL (Facebook has multiple URL formats for same post).
+- **Four-layer deduplication** — `seen_posts.json` stores post ID, SHA-1 of text, and SHA-1 of URL (cross-run). In-memory per run: URL Set + Jaccard similarity (85% word overlap). This covers DOM vs GraphQL ID format differences and near-identical text with minor variation.
 
 ## Tech Stack
 - Runtime: Node.js (current LTS)
@@ -110,10 +110,10 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Teams format** — Adaptive Card only. `{"text":"..."}` returns 202 but posts nothing. Must send full AdaptiveCard JSON with `"type":"AdaptiveCard"` at root. See `teams/alert.js` for the exact working structure.
 - **Playwright session bug #36139** — session cookies may not persist. Always verify login AFTER loading session (check for logged-in page element), re-login if verification fails.
 - **PM2 persistence** — `pm2 startup` alone is NOT enough. Must also run `pm2 save` after starting the process or it will not survive reboot.
-- **Facebook URL formats** — same post can have 3+ different URLs. Deduplicate by numeric post ID extracted from URL, never by full URL string.
+- **Facebook URL formats** — same post can have 3+ different URLs. The dedup system stores a SHA-1 of the cleaned URL (`/groups/name/posts/123456`, query params stripped) in `seen_posts.json`. Always strip query params before storing or comparing URLs.
 - **Facebook vanity URL vs numeric group ID** — both can point to the same group. Facebook redirects vanity to numeric. If both are in the Groups sheet, the group is scraped twice. Always use numeric IDs.
 - **GraphQL `creation_time` — do NOT use `findDeep(obj, 'creation_time')` on the full Story object.** Nested linked articles have their own `creation_time`; findDeep returns the wrong one (months off, no error). Always search `comet_sections.timestamp` subtree first: `findDeep(obj.comet_sections?.timestamp ?? obj, 'creation_time')`.
-- **DOM vs GraphQL post IDs use different formats** — DOM gives numeric IDs; GraphQL gives BASE64 IDs. Same post never matches in a Set comparison across sources. Merge dedup checks both ID and URL to prevent the same post appearing twice.
+- **DOM vs GraphQL post IDs use different formats** — DOM gives numeric IDs; GraphQL gives BASE64 IDs. The same post will never match on ID alone across extraction methods. Mitigated by: (1) scraper merge filters by both ID and URL, (2) cross-run URL SHA-1 dedup in `seen_posts.json` catches re-surfacing posts regardless of which extraction method finds them.
 - **Lock file cleanup** — if script is killed mid-run, lock file remains. Startup checks lock age: if older than 25 minutes, treats as stale and deletes it.
 - **Claude fallback** — if Claude fails after 2 retries, send Teams alert with "Draft unavailable" message. Never drop a lead because Claude is down.
 - **Session expired handling** — `ensureLoggedIn` throws `SESSION_EXPIRED`. `index.js` catches it and sends a detailed Teams card with step-by-step re-login instructions. Do NOT add auto-login back.
