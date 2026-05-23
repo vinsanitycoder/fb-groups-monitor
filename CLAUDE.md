@@ -52,6 +52,8 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Sheets write uses `RAW` not `USER_ENTERED`** — prevents formula injection when Facebook post text (e.g. `=IMPORTDATA(...)`) is written to the Leads tab. Never revert this.
 - **Atomic lock file (`wx` flag)** — `acquireLock()` uses `{ flag: 'wx' }` (O_EXCL) for an atomic exclusive create. Eliminates the TOCTOU race where two processes could both pass an `existsSync` check before either wrote the file.
 - **Prompt injection guards in `draft.js`** — post text is scrubbed for instruction-override phrases before reaching Claude; any draft containing an unexpected URL is discarded. Do not remove these guards.
+- **`processPost()` is a standalone function** — the full per-post pipeline (filter → dedup → draft → Sheets → Teams → mark-seen) lives in `processPost()` above `main()`, not inline in the group loop. Keep new pipeline steps inside `processPost()`, not in the loop.
+- **No module-level side effects in `index.js`** — all guard checks (weekend, hours), flag file reads, and `acquireLock()` run inside `main()`. Do not move them back to module level — doing so breaks the `try/finally` lock guarantee and makes the file untestable.
 
 ## Tech Stack
 - Runtime: Node.js (current LTS)
@@ -63,7 +65,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 - Scheduling: PM2 cron on macOS / Task Scheduler on Windows
 
 ## Project Structure
-- `src/index.js` — main entry point, orchestrates one full run then exits
+- `src/index.js` — main entry point, orchestrates one full run then exits. Contains `processPost()` (the full per-post pipeline) and `main()` (the group loop + lifecycle)
 - `src/config.js` — loads + validates all env vars on startup, exits if any missing
 - `src/facebook/auth.js` — login, session save/load, login verification
 - `src/facebook/scraper.js` — group scraping, post extraction
@@ -94,9 +96,9 @@ Non-technical operators — no developers on the operations side. Every instruct
 - Each Facebook group scrape is wrapped independently — one group failure must not kill the run
 - `config.js` validates ALL required env vars on startup and exits with a named error if any are missing
 - `max_tokens: 80` on every Claude API call — hard server-side cap, no exceptions
-- Log every run summary to `logs/` with: timestamp, groups checked, posts found, leads logged, duration
+- Log every run summary to `logs/` with: timestamp, groups checked, posts scraped, posts evaluated (scraped minus old-post skips), leads logged, duration
 - **Always use `path.join()` for file paths — never string concatenation** (ensures Windows compatibility)
-- Business hours + weekend check at top of `index.js` — exit immediately if outside 8am–9pm or if Saturday/Sunday
+- Business hours + weekend check runs inside `main()` — not at module level. All guard checks, flag reads, and `acquireLock()` live inside `main()` so `releaseLock()` in `finally` is always paired correctly
 
 ## External Integrations (Confirmed Working)
 - **Teams (Power Automate Workflows webhook):** Must send full AdaptiveCard JSON with `"type":"AdaptiveCard"` at root. `{"text":"..."}` returns HTTP 202 but silently posts nothing. Confirmed working 2026-05-20.
