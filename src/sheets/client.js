@@ -78,6 +78,13 @@ async function loadConfig() {
 
     const rawFreq = parseInt(configMap['Link Frequency (%)'] || '40', 10);
 
+    // Run Times: comma-separated 24-hour values, e.g. "8,12,17"
+    // Defaults to 8am / 12pm / 5pm if the key is absent from the sheet.
+    const runTimes = (configMap['Run Times'] || '8,12,17')
+      .split(',')
+      .map(t => parseInt(t.trim(), 10))
+      .filter(t => !isNaN(t) && t >= 0 && t <= 23);
+
     return {
       systemPrompt: configMap['Claude System Prompt'] || null,
       businessHoursStart: parseInt(configMap['Business Hours Start'] || '8', 10),
@@ -88,6 +95,7 @@ async function loadConfig() {
       monitorEnabled: (configMap['Monitor Enabled'] || 'Yes').trim().toLowerCase() !== 'no',
       commentAlertThreshold: parseInt(configMap['Comment Alert Threshold'] || '5', 10),
       likeAlertThreshold: parseInt(configMap['Like Alert Threshold'] || '2', 10),
+      runTimes,
       keywords,
       groups,
       signalPhrases,

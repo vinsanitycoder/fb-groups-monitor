@@ -10,7 +10,7 @@ This tool watches those groups for you, around the clock or for a certain time p
 
 ## What it does
 
-- Checks your list of Facebook groups every 30 minutes during business hours on weekdays (Mon–Fri)
+- Checks your list of Facebook groups 3 times a day on weekdays (Mon–Fri) — morning, midday, and end of day by default. The schedule is configurable in your Google Sheet.
 - Spots posts that match your keywords — you control the list (e.g. "need accountant", "looking for bookkeeper", "looking for SEO specialist")
 - Ignores ads, job postings, and spam automatically — you control what to filter out
 - Sends your team a Teams alert the moment a real lead is found, with a direct link to the post
@@ -54,8 +54,9 @@ Create a new Google Sheet. It needs the following tabs — the names must match 
 | Key | Example value | Description |
 |-----|---------------|-------------|
 | Monitor Enabled | Yes | Change to `No` to pause the monitor |
-| Business Hours Start | 8 | Hour to start monitoring (24-hour clock) |
-| Business Hours End | 21 | Hour to stop monitoring (24-hour clock) |
+| Run Times | 8,12,17 | Comma-separated hours (24-hour clock) when the monitor runs. Default is 8am, 12pm, 5pm. Change here — no restart needed. |
+| Business Hours Start | 8 | Earliest hour the monitor will ever run (24-hour clock) |
+| Business Hours End | 21 | Latest hour the monitor will ever run (24-hour clock) |
 | Max Post Age (hours) | 24 | Ignore posts older than this |
 | FB Page URL | https://facebook.com/yourpage | Optional — appended to some draft replies |
 | Link Frequency (%) | 40 | 0–100. How often to include the page link in drafts |
