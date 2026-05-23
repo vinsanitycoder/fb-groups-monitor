@@ -11,7 +11,7 @@ const { isRelevant } = require('./filters/relevance');
 const { loadConfig, appendLead } = require('./sheets/client');
 const { generateDraft } = require('./claude/draft');
 const { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert } = require('./teams/alert');
-const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup } = require('./utils/dedup');
+const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen } = require('./utils/dedup');
 const { acquireLock, releaseLock } = require('./utils/lock');
 const { writeRunSummary } = require('./utils/logger');
 
@@ -160,6 +160,10 @@ async function main() {
     // Track URLs alerted this run — prevents the same post firing twice if it
     // somehow survives the scraper merge (e.g. across two groups in one run).
     const alertedUrls = new Set();
+    // Token sets for posts alerted this run — used for fuzzy similarity dedup.
+    // Catches near-identical posts (same user, multiple groups) where DOM
+    // extraction produces slightly different text, defeating the SHA-1 check.
+    const seenPostTokenSets = [];
 
     for (let i = 0; i < targetGroups.length; i++) {
       const groupUrl = targetGroups[i];
@@ -261,6 +265,11 @@ async function main() {
           continue;
         }
 
+        if (isSimilarToSeen(post.text, seenPostTokenSets)) {
+          console.log(`[index] DEDUP (similar text — likely same post in multiple groups): ${post.text.slice(0, 60)}`);
+          continue;
+        }
+
         console.log(`[index] NEW LEAD: ${post.text.slice(0, 80)}`);
 
         const timestamp = new Date().toISOString();
@@ -311,6 +320,7 @@ async function main() {
         // ── Mark seen ────────────────────────────────────────────────────
         markSeen(post.id, dedupCache);
         markSeenText(post.text, dedupCache);
+        seenPostTokenSets.push(tokenizePost(post.text));
         if (post.url) alertedUrls.add(post.url);
         summary.leadsLogged++;
 
