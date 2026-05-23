@@ -57,6 +57,41 @@ function markSeenText(text, cache) {
   cache[_textKey(text)] = Date.now();
 }
 
+// Fuzzy similarity — Jaccard index on word token sets.
+// Catches posts that are nearly identical but not byte-for-byte equal,
+// e.g. when DOM extraction truncates differently across groups.
+function _tokenizeWords(text) {
+  return new Set(
+    text.toLowerCase()
+      .replace(/[^a-z0-9\s]/g, '')
+      .split(/\s+/)
+      .filter(w => w.length > 2)
+  );
+}
+
+// Returns a token Set for a post — callers store these in an array.
+function tokenizePost(text) {
+  return _tokenizeWords(text);
+}
+
+// Returns true if text is ≥ threshold similar to any entry in seenTokenSets.
+// seenTokenSets is an array of Sets returned by tokenizePost().
+// Minimum 8 tokens required — very short posts are too ambiguous to compare.
+function isSimilarToSeen(text, seenTokenSets, threshold = 0.85) {
+  if (!seenTokenSets.length) return false;
+  const tokens = _tokenizeWords(text);
+  if (tokens.size < 8) return false;
+  for (const seen of seenTokenSets) {
+    let intersection = 0;
+    for (const t of tokens) {
+      if (seen.has(t)) intersection++;
+    }
+    const union = tokens.size + seen.size - intersection;
+    if (union > 0 && intersection / union >= threshold) return true;
+  }
+  return false;
+}
+
 function saveDedup(cache) {
   try {
     ensureDataDir();
@@ -71,4 +106,4 @@ function saveDedup(cache) {
   }
 }
 
-module.exports = { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup };
+module.exports = { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen };
