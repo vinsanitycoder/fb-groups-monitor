@@ -11,7 +11,7 @@ const { isRelevant } = require('./filters/relevance');
 const { loadConfig, appendLead } = require('./sheets/client');
 const { generateDraft } = require('./claude/draft');
 const { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert } = require('./teams/alert');
-const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen } = require('./utils/dedup');
+const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen, isUrlDuplicate, markUrlSeen } = require('./utils/dedup');
 const { acquireLock, releaseLock } = require('./utils/lock');
 const { writeRunSummary } = require('./utils/logger');
 
@@ -265,6 +265,11 @@ async function main() {
           continue;
         }
 
+        if (isUrlDuplicate(post.url, dedupCache)) {
+          console.log(`[index] DEDUP (URL seen in a previous run): ${post.url}`);
+          continue;
+        }
+
         if (isSimilarToSeen(post.text, seenPostTokenSets)) {
           console.log(`[index] DEDUP (similar text — likely same post in multiple groups): ${post.text.slice(0, 60)}`);
           continue;
@@ -320,6 +325,7 @@ async function main() {
         // ── Mark seen ────────────────────────────────────────────────────
         markSeen(post.id, dedupCache);
         markSeenText(post.text, dedupCache);
+        markUrlSeen(post.url, dedupCache);
         seenPostTokenSets.push(tokenizePost(post.text));
         if (post.url) alertedUrls.add(post.url);
         summary.leadsLogged++;
