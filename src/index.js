@@ -139,7 +139,7 @@ async function main() {
     // ── 1. Load config from Sheets ──────────────────────────────────────────
     console.log('[index] Loading config from Google Sheets...');
     const sheetConfig = await loadConfig();
-    const { keywords, groups, signalPhrases, disqualifiers, competitorSignals, fbPageUrl, linkProbability, systemPrompt, monitorEnabled, businessHoursStart, businessHoursEnd, commentAlertThreshold, likeAlertThreshold } = sheetConfig;
+    const { keywords, groups, signalPhrases, disqualifiers, competitorSignals, fbPageUrl, linkProbability, systemPrompt, monitorEnabled, businessHoursStart, businessHoursEnd, commentAlertThreshold, likeAlertThreshold, runTimes } = sheetConfig;
     console.log(`[index] Config loaded — ${groups.length} group(s), ${keywords.length} keywords`);
 
     if (!monitorEnabled) {
@@ -151,6 +151,14 @@ async function main() {
     // hardcoded 8/21 as a fast exit; this enforces the user's sheet values).
     if (process.env.TEST_MODE !== '1' && (hour < businessHoursStart || hour >= businessHoursEnd)) {
       console.log(`[index] Outside sheet-configured business hours (${hour}:xx, sheet: ${businessHoursStart}–${businessHoursEnd}). Exiting.`);
+      return;
+    }
+
+    // Run times check — only proceed at the configured hours (default: 8, 12, 17).
+    // PM2 fires this script every hour; it exits here if it is not a scheduled run time.
+    // To change the schedule, update "Run Times" in the Google Sheet Config tab — no restart needed.
+    if (process.env.TEST_MODE !== '1' && !runTimes.includes(hour)) {
+      console.log(`[index] Not a scheduled run time (${hour}:xx, configured: ${runTimes.join(', ')}). Exiting.`);
       return;
     }
 
