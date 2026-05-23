@@ -18,10 +18,22 @@ const { writeRunSummary } = require('./utils/logger');
 const MAX_GROUPS_PER_RUN = 15;
 const ZERO_POSTS_LIMIT = 3;
 
-// ── Business hours check ──────────────────────────────────────────────────────
+// ── Business hours + weekend check ───────────────────────────────────────────
 const now = new Date();
 const todayStr = now.toISOString().slice(0, 10);
 const hour = now.getHours();
+const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+
+const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+if (isWeekend) {
+  if (process.env.TEST_MODE === '1') {
+    console.log(`[index] Weekend (day ${dayOfWeek}) — TEST_MODE override active`);
+  } else {
+    console.log(`[index] Weekend — monitor does not run on Saturdays or Sundays. Exiting.`);
+    process.exit(0);
+  }
+}
+
 if (hour < 8 || hour >= 21) {
   if (process.env.TEST_MODE === '1') {
     console.log(`[index] Outside business hours (${hour}:xx) — TEST_MODE override active`);
