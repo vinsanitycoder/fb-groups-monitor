@@ -19,50 +19,6 @@ const { loadGroupState, saveGroupState } = require('./utils/groupstate');
 const MAX_GROUPS_PER_RUN = 15;
 const ZERO_POSTS_LIMIT = 3;
 
-// ── Business hours + weekend check ───────────────────────────────────────────
-const now = new Date();
-const todayStr = now.toISOString().slice(0, 10);
-const hour = now.getHours();
-const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
-
-const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-if (isWeekend) {
-  if (process.env.TEST_MODE === '1') {
-    console.log(`[index] Weekend (day ${dayOfWeek}) — TEST_MODE override active`);
-  } else {
-    console.log(`[index] Weekend — monitor does not run on Saturdays or Sundays. Exiting.`);
-    process.exit(0);
-  }
-}
-
-if (hour < 8 || hour >= 21) {
-  if (process.env.TEST_MODE === '1') {
-    console.log(`[index] Outside business hours (${hour}:xx) — TEST_MODE override active`);
-  } else {
-    console.log(`[index] Outside business hours (${hour}:xx). Exiting.`);
-    process.exit(0);
-  }
-}
-
-// ── First-run-of-day detection (for startup Teams alert) ─────────────────────
-const startupFlagPath = path.join(__dirname, '..', 'data', `startup_${todayStr}.flag`);
-const isFirstRunToday = !fs.existsSync(startupFlagPath);
-if (isFirstRunToday) {
-  try { fs.writeFileSync(startupFlagPath, ''); } catch (_) {}
-}
-
-// ── Initial catchup detection — deep-scroll on the very first run ever ────────
-const catchupFlagPath = path.join(__dirname, '..', 'data', 'initial_catchup.done');
-const isInitialCatchup = !fs.existsSync(catchupFlagPath);
-if (isInitialCatchup) {
-  console.log('[index] Initial catchup mode — will scroll deeper to capture last 3 days');
-}
-
-// ── Lock check — exit immediately if another run is active ────────────────────
-if (!acquireLock()) {
-  process.exit(0);
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function shuffle(arr) {
   const a = [...arr];
@@ -109,15 +65,164 @@ function isPostNewSinceLastRun(post, lastSeenIso, runStartMs) {
   return postTime > new Date(lastSeenIso);
 }
 
+// ── Per-post pipeline ─────────────────────────────────────────────────────────
+// Runs the full filter → dedup → draft → Sheets → Teams → mark-seen sequence
+// for a single post. Returns true if the post became a new lead, false if skipped.
+// Extracted from the group loop so each stage is independently readable and testable.
+async function processPost(post, {
+  dedupCache, alertedUrls, seenPostTokenSets,
+  keywords, signalPhrases, disqualifiers, competitorSignals,
+  commentAlertThreshold, likeAlertThreshold,
+  fbPageUrl, linkProbability, systemPrompt,
+  page, summary,
+}) {
+  if (!post.text) return false;
+
+  // ── 1. Pre-check: keyword OR high activity ──────────────────────────────
+  const hasKeyword = keywords.some(k => post.text.toLowerCase().includes(k));
+  const isHighActivity = post.commentCount >= commentAlertThreshold || post.likeCount >= likeAlertThreshold;
+  if (!hasKeyword && !isHighActivity) {
+    console.log(`[index] SKIP (no keyword): ${post.text.slice(0, 60)}`);
+    return false;
+  }
+
+  // ── 2. Engagement floor — must have ≥3 likes OR ≥3 comments ────────────
+  // Bypassed for posts already identified as high-activity (sheet thresholds
+  // can be lower than 3, so isHighActivity may already be true).
+  if (!isHighActivity && post.likeCount < 3 && post.commentCount < 3) {
+    console.log(`[index] SKIP (low engagement — ${post.likeCount} likes, ${post.commentCount} comments): ${post.text.slice(0, 60)}`);
+    return false;
+  }
+
+  // ── 3. Comment scrape (competitor signal detection) ─────────────────────
+  // Also makes the run look more human — navigating to a post before moving on.
+  let commentText = '';
+  if (competitorSignals.length > 0) {
+    commentText = await scrapeComments(page, post.url);
+    await wait(randInt(2000, 5000));
+  }
+
+  // ── 4. Relevance check ──────────────────────────────────────────────────
+  const { pass, reason, competitorSignal, highActivity, commentCount, likeCount } =
+    isRelevant(post, keywords, signalPhrases, disqualifiers, competitorSignals, commentText, commentAlertThreshold, likeAlertThreshold);
+  if (!pass) {
+    console.log(`[index] SKIP (${reason}): ${post.text.slice(0, 60)}`);
+    return false;
+  }
+
+  // ── 5. Five-layer dedup ─────────────────────────────────────────────────
+  if (isDuplicate(post.id, dedupCache))              { console.log(`[index] DEDUP (id): ${post.id}`);                              return false; }
+  if (isDuplicateText(post.text, dedupCache))        { console.log(`[index] DEDUP (text sha1): ${post.text.slice(0, 60)}`);       return false; }
+  if (post.url && alertedUrls.has(post.url))         { console.log(`[index] DEDUP (url in-run): ${post.url}`);                    return false; }
+  if (isUrlDuplicate(post.url, dedupCache))          { console.log(`[index] DEDUP (url cross-run): ${post.url}`);                 return false; }
+  if (isSimilarToSeen(post.text, seenPostTokenSets)) { console.log(`[index] DEDUP (jaccard): ${post.text.slice(0, 60)}`);         return false; }
+
+  console.log(`[index] NEW LEAD: ${post.text.slice(0, 80)}`);
+
+  // ── 6. Build lead object ────────────────────────────────────────────────
+  const lead = {
+    timestamp: new Date().toISOString(),
+    groupName: post.groupName,
+    postText: post.text.slice(0, 500),
+    postUrl: post.url,
+    postId: post.id,
+    postedAt: post.postedAt || null,
+    draftReply: '',
+    status: 'New',
+    competitorSignal: competitorSignal || false,
+    highActivity: highActivity || false,
+    commentCount: commentCount || 0,
+    likeCount: likeCount || 0,
+  };
+
+  // ── 7. Claude draft (before Sheets write so the draft is always saved) ──
+  const draft = await generateDraft(post.text, fbPageUrl, linkProbability, systemPrompt);
+  if (draft) {
+    lead.draftReply = draft;
+    console.log(`[index] Draft: "${draft}"`);
+  } else {
+    lead.draftReply = 'Draft unavailable — Claude API error.';
+    console.warn('[index] Claude draft failed — using fallback');
+    summary.errors.push('Claude draft failed for post ' + post.id);
+  }
+
+  // ── 8. Write to Sheets ──────────────────────────────────────────────────
+  try {
+    await appendLead(lead);
+    console.log(`[index] Written to Sheets: post ${post.id}`);
+  } catch (err) {
+    console.error(`[index] Sheets write failed: ${err.message}`);
+    summary.errors.push(`Sheets write failed: ${err.message}`);
+  }
+
+  // ── 9. Teams alert ──────────────────────────────────────────────────────
+  try {
+    await sendLeadAlert(lead);
+    console.log(`[index] Teams alert sent for post ${post.id}`);
+  } catch (err) {
+    console.error(`[index] Teams alert failed: ${err.message}`);
+    summary.errors.push(`Teams alert failed: ${err.message}`);
+  }
+
+  // ── 10. Mark seen in all dedup stores ───────────────────────────────────
+  markSeen(post.id, dedupCache);
+  markSeenText(post.text, dedupCache);
+  markUrlSeen(post.url, dedupCache);
+  seenPostTokenSets.push(tokenizePost(post.text));
+  if (post.url) alertedUrls.add(post.url);
+
+  return true;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
+  // ── Guard checks — fast exits before any I/O or lock acquisition ─────────
+  const now = new Date();
+  const todayStr = now.toISOString().slice(0, 10);
+  const hour = now.getHours();
+  const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+
+  if (process.env.TEST_MODE !== '1') {
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log('[index] Weekend — monitor does not run on Saturdays or Sundays. Exiting.');
+      return;
+    }
+    if (hour < 8 || hour >= 21) {
+      console.log(`[index] Outside business hours (${hour}:xx). Exiting.`);
+      return;
+    }
+  } else {
+    if (dayOfWeek === 0 || dayOfWeek === 6) console.log(`[index] Weekend (day ${dayOfWeek}) — TEST_MODE override active`);
+    if (hour < 8 || hour >= 21) console.log(`[index] Outside business hours (${hour}:xx) — TEST_MODE override active`);
+  }
+
+  // ── First-run-of-day detection (for startup Teams alert) ─────────────────
+  const startupFlagPath = path.join(__dirname, '..', 'data', `startup_${todayStr}.flag`);
+  const isFirstRunToday = !fs.existsSync(startupFlagPath);
+  if (isFirstRunToday) {
+    try { fs.writeFileSync(startupFlagPath, ''); } catch (_) {}
+  }
+
+  // ── Initial catchup detection — deep-scroll on the very first run ever ───
+  const catchupFlagPath = path.join(__dirname, '..', 'data', 'initial_catchup.done');
+  const isInitialCatchup = !fs.existsSync(catchupFlagPath);
+  if (isInitialCatchup) {
+    console.log('[index] Initial catchup mode — will scroll deeper to capture last 3 days');
+  }
+
+  // ── Lock — acquired here so releaseLock() in finally is always paired ────
+  // Previously acquired at module level, which meant a crash between require()
+  // and the try block would leave the lock file without ever calling releaseLock().
+  if (!acquireLock()) return;
+
   const startTime = Date.now();
   console.log('[index] Run started');
 
   const summary = {
     runAt: now.toISOString(),
     groupsChecked: 0,
-    postsFound: 0,
+    postsFound: 0,     // raw count scraped from Facebook
+    postsSkippedOld: 0, // filtered out by last-run timestamp (not new since last scrape)
     leadsLogged: 0,
     durationMs: 0,
     errors: [],
@@ -132,7 +237,7 @@ async function main() {
     if (isFirstRunToday) {
       await sendSystemAlert(
         'FB Monitor — Started',
-        'Scheduler active. Running every 30 min, 8am–9pm.'
+        'Scheduler active. Runs 3× per day (Mon–Fri), 8am–9pm.'
       ).catch(err => console.warn('[index] Startup alert failed:', err.message));
     }
 
@@ -256,135 +361,31 @@ async function main() {
 
       summary.postsFound += posts.length;
 
-      // ── Last-run filter — skip posts older than the previous scrape of this group ──
+      // ── Last-run filter — skip posts older than the previous scrape ──────
       // Uses raw post count above so zero-posts detection is unaffected.
       // Posts with no parseable timestamp pass through (safe side: never drop a lead).
       if (groupState[groupUrl]) {
         const before = posts.length;
         posts = posts.filter(p => isPostNewSinceLastRun(p, groupState[groupUrl], startTime));
         const skipped = before - posts.length;
+        summary.postsSkippedOld += skipped;
         if (skipped > 0) {
-          console.log(`[index] Skipped ${skipped} post(s) from before last run (last: ${groupState[groupUrl]})`);
+          console.log(`[index] Skipped ${skipped} old post(s) — ${posts.length} new to evaluate (last run: ${groupState[groupUrl]})`);
         }
       }
 
       // ── 5. Filter + dedup + pipeline ──────────────────────────────────────
       for (const post of posts) {
-        if (!post.text) continue;
-
-        // Pre-check: skip comment scraping if no keyword AND not high activity
-        const hasKeyword = keywords.some(k => post.text.toLowerCase().includes(k));
-        const isHighActivity = post.commentCount >= commentAlertThreshold || post.likeCount >= likeAlertThreshold;
-        if (!hasKeyword && !isHighActivity) {
-          console.log(`[index] SKIP (no keyword): ${post.text.slice(0, 60)}`);
-          continue;
-        }
-
-        // Engagement filter — must have ≥3 likes OR ≥3 comments.
-        // Skip this check for posts already identified as high-activity
-        // (isHighActivity uses the sheet-configured thresholds which can be < 3).
-        if (!isHighActivity && post.likeCount < 3 && post.commentCount < 3) {
-          console.log(`[index] SKIP (low engagement — ${post.likeCount} likes, ${post.commentCount} comments): ${post.text.slice(0, 60)}`);
-          continue;
-        }
-
-        // For keyword-matched posts, navigate to the post and read comments.
-        // Detects competitor activity in comments AND makes the run look more human.
-        let commentText = '';
-        if (competitorSignals.length > 0) {
-          commentText = await scrapeComments(page, post.url);
-          await wait(randInt(2000, 5000));
-        }
-
-        const { pass, reason, competitorSignal, highActivity, commentCount, likeCount } = isRelevant(post, keywords, signalPhrases, disqualifiers, competitorSignals, commentText, commentAlertThreshold, likeAlertThreshold);
-        if (!pass) {
-          console.log(`[index] SKIP (${reason}): ${post.text.slice(0, 60)}`);
-          continue;
-        }
-
-        if (isDuplicate(post.id, dedupCache)) {
-          console.log(`[index] DEDUP: post ${post.id} already seen`);
-          continue;
-        }
-
-        if (isDuplicateText(post.text, dedupCache)) {
-          console.log(`[index] DEDUP (cross-group duplicate): ${post.text.slice(0, 60)}`);
-          continue;
-        }
-
-        if (post.url && alertedUrls.has(post.url)) {
-          console.log(`[index] DEDUP (same URL already alerted this run): ${post.url}`);
-          continue;
-        }
-
-        if (isUrlDuplicate(post.url, dedupCache)) {
-          console.log(`[index] DEDUP (URL seen in a previous run): ${post.url}`);
-          continue;
-        }
-
-        if (isSimilarToSeen(post.text, seenPostTokenSets)) {
-          console.log(`[index] DEDUP (similar text — likely same post in multiple groups): ${post.text.slice(0, 60)}`);
-          continue;
-        }
-
-        console.log(`[index] NEW LEAD: ${post.text.slice(0, 80)}`);
-
-        const timestamp = new Date().toISOString();
-        const lead = {
-          timestamp,
-          groupName: post.groupName,
-          postText: post.text.slice(0, 500),
-          postUrl: post.url,
-          postId: post.id,
-          postedAt: post.postedAt || null,
-          draftReply: '',
-          status: 'New',
-          competitorSignal: competitorSignal || false,
-          highActivity: highActivity || false,
-          commentCount: commentCount || 0,
-          likeCount: likeCount || 0,
-        };
-
-        // ── Claude draft (before Sheets write so the draft is saved) ─────
-        const draft = await generateDraft(post.text, fbPageUrl, linkProbability, systemPrompt);
-        if (draft) {
-          lead.draftReply = draft;
-          console.log(`[index] Draft: "${draft}"`);
-        } else {
-          lead.draftReply = 'Draft unavailable — Claude API error.';
-          console.warn('[index] Claude draft failed — using fallback');
-          summary.errors.push('Claude draft failed for post ' + post.id);
-        }
-
-        // ── Write to Sheets ──────────────────────────────────────────────
-        try {
-          await appendLead(lead);
-          console.log(`[index] Written to Sheets: post ${post.id}`);
-        } catch (err) {
-          console.error(`[index] Sheets write failed: ${err.message}`);
-          summary.errors.push(`Sheets write failed: ${err.message}`);
-        }
-
-        // ── Teams alert ──────────────────────────────────────────────────
-        try {
-          await sendLeadAlert(lead);
-          console.log(`[index] Teams alert sent for post ${post.id}`);
-        } catch (err) {
-          console.error(`[index] Teams alert failed: ${err.message}`);
-          summary.errors.push(`Teams alert failed: ${err.message}`);
-        }
-
-        // ── Mark seen ────────────────────────────────────────────────────
-        markSeen(post.id, dedupCache);
-        markSeenText(post.text, dedupCache);
-        markUrlSeen(post.url, dedupCache);
-        seenPostTokenSets.push(tokenizePost(post.text));
-        if (post.url) alertedUrls.add(post.url);
-        summary.leadsLogged++;
-
-        // 3-second rate limit between consecutive Teams posts
-        if (summary.leadsLogged >= 1) {
-          await wait(3000);
+        const wasLead = await processPost(post, {
+          dedupCache, alertedUrls, seenPostTokenSets,
+          keywords, signalPhrases, disqualifiers, competitorSignals,
+          commentAlertThreshold, likeAlertThreshold,
+          fbPageUrl, linkProbability, systemPrompt,
+          page, summary,
+        });
+        if (wasLead) {
+          summary.leadsLogged++;
+          await wait(3000); // rate limit between consecutive Teams posts
         }
       }
 
@@ -428,10 +429,12 @@ async function main() {
 
   summary.durationMs = Date.now() - startTime;
   writeRunSummary(summary);
+
+  const evaluated = summary.postsFound - summary.postsSkippedOld;
   console.log(
     `[index] Run complete in ${Math.round(summary.durationMs / 1000)}s — ` +
-    `${summary.groupsChecked} group(s), ${summary.postsFound} posts found, ` +
-    `${summary.leadsLogged} leads logged`
+    `${summary.groupsChecked} group(s), ${summary.postsFound} scraped, ` +
+    `${evaluated} evaluated, ${summary.leadsLogged} leads logged`
   );
 }
 
