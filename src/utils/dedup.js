@@ -57,6 +57,23 @@ function markSeenText(text, cache) {
   cache[_textKey(text)] = Date.now();
 }
 
+// URL dedup — persisted across runs to catch the same post re-surfacing when
+// the post ID format differs between DOM (numeric) and GraphQL (base64) extraction.
+// The cleaned URL (query params stripped) is stable across both extraction paths.
+function _urlKey(url) {
+  return 'url_' + crypto.createHash('sha1').update(url.toLowerCase().trim()).digest('hex').slice(0, 16);
+}
+
+function isUrlDuplicate(url, cache) {
+  if (!url) return false;
+  return Object.prototype.hasOwnProperty.call(cache, _urlKey(url));
+}
+
+function markUrlSeen(url, cache) {
+  if (!url) return;
+  cache[_urlKey(url)] = Date.now();
+}
+
 // Fuzzy similarity — Jaccard index on word token sets.
 // Catches posts that are nearly identical but not byte-for-byte equal,
 // e.g. when DOM extraction truncates differently across groups.
@@ -106,4 +123,4 @@ function saveDedup(cache) {
   }
 }
 
-module.exports = { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen };
+module.exports = { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen, isUrlDuplicate, markUrlSeen };
