@@ -10,7 +10,7 @@ This tool watches those groups for you, around the clock or for a certain time p
 
 ## What it does
 
-- Checks your list of Facebook groups every 30 minutes during business hours
+- Checks your list of Facebook groups every 30 minutes during business hours on weekdays (Mon–Fri)
 - Spots posts that match your keywords — you control the list (e.g. "need accountant", "looking for bookkeeper", "looking for SEO specialist")
 - Ignores ads, job postings, and spam automatically — you control what to filter out
 - Sends your team a Teams alert the moment a real lead is found, with a direct link to the post
