@@ -17,6 +17,10 @@ async function generateDraft(postText, fbPageUrl = null, linkProbability = 0.4, 
   const clean = postText
     .replace(/https?:\/\/\S+/g, '')
     .replace(/\s+/g, ' ')
+    // Prompt injection guards — strip common instruction-override phrases
+    .replace(/ignore\s+(previous|above|all)\s+(instructions?|prompts?|rules?)/gi, '[removed]')
+    .replace(/you\s+are\s+now\s+a/gi, '[removed]')
+    .replace(/disregard\s+(all|any|previous)\s+(instructions?|rules?)/gi, '[removed]')
     .trim()
     .slice(0, 400);
 
@@ -36,6 +40,13 @@ async function generateDraft(postText, fbPageUrl = null, linkProbability = 0.4, 
       });
 
       let draft = message.content[0].text.trim();
+
+      // Reject any draft that contains a URL when we didn't ask for one —
+      // this is the clearest signal that prompt injection succeeded.
+      if (!includeLink && /https?:\/\//i.test(draft)) {
+        console.warn('[claude] Draft contained unexpected URL — possible injection, discarding');
+        return null;
+      }
 
       // Append the actual URL so Claude never has to reproduce it
       if (includeLink) {
