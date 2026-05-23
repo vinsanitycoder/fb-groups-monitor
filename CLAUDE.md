@@ -34,6 +34,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 ## What NOT to Change Without Asking
 - `session/` — active Facebook login session; changes break auth
 - `data/seen_posts.json` — dedup state; deleting causes re-processing of recent posts
+- `data/group_state.json` — per-group last-seen timestamps; deleting causes all posts to re-process on next run
 - `src/facebook/auth.js` — login verification logic; changes can break session persistence
 - `.env` — credentials file
 
@@ -47,7 +48,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Sequential group scraping** — never parallel tabs. More human-like, less detectable by Facebook.
 - **Claude Haiku only** — no Sonnet. Prompt caching not implemented (Haiku minimum is 1,024 tokens; our prompt is ~35 tokens — below threshold).
 - **Two-layer filter before Claude** — keyword match AND signal phrase match required. Claude never called on noise.
-- **Four-layer deduplication** — `seen_posts.json` stores post ID, SHA-1 of text, and SHA-1 of URL (cross-run). In-memory per run: URL Set + Jaccard similarity (85% word overlap). This covers DOM vs GraphQL ID format differences and near-identical text with minor variation.
+- **Five-layer deduplication** — `seen_posts.json` stores post ID, SHA-1 of text, and SHA-1 of URL (cross-run). In-memory per run: URL Set + Jaccard similarity (85% word overlap). `data/group_state.json` stores last-seen timestamp per group; posts older than the previous scrape of that group are filtered before the pipeline. This covers DOM vs GraphQL ID format differences, near-identical text, and repeat alerts across runs.
 
 ## Tech Stack
 - Runtime: Node.js (current LTS)
@@ -68,11 +69,13 @@ Non-technical operators — no developers on the operations side. Every instruct
 - `src/sheets/client.js` — Google Sheets API wrapper, batch reads, appends
 - `src/claude/draft.js` — Claude Haiku API call, prompt construction, fallback
 - `src/teams/alert.js` — Power Automate Workflow webhook, AdaptiveCard format
-- `src/utils/dedup.js` — local seen_posts.json read/write (NOT Sheets reads for dedup)
+- `src/utils/dedup.js` — seen_posts.json read/write: post ID, text SHA-1, URL SHA-1, Jaccard similarity
+- `src/utils/groupstate.js` — group_state.json read/write: per-group last-seen timestamps
 - `src/utils/lock.js` — run lock file (prevents simultaneous instances)
 - `src/utils/logger.js` — structured per-run logging
 - `session/` — Facebook browser session storage (gitignored, never commit)
 - `data/seen_posts.json` — deduplication cache, 7-day rolling window (gitignored)
+- `data/group_state.json` — per-group last-seen timestamps (gitignored)
 - `logs/` — per-run logs (gitignored)
 
 ## Essential Commands
