@@ -36,7 +36,7 @@ async function appendLead(lead) {
     await sheets.spreadsheets.values.append({
       spreadsheetId: config.googleSheetId,
       range: 'Leads!A:H',
-      valueInputOption: 'USER_ENTERED',
+      valueInputOption: 'RAW',
       requestBody: { values: [row] },
     });
   } catch (err) {
@@ -85,8 +85,22 @@ async function loadConfig() {
       .map(t => parseInt(t.trim(), 10))
       .filter(t => !isNaN(t) && t >= 0 && t <= 23);
 
+    // Cap system prompt length — an uncapped value inflates Claude input tokens on
+    // every call and bypasses the hardcoded safety prompts in draft.js entirely.
+    const MAX_SYSTEM_PROMPT_LENGTH = 500;
+    const rawSystemPrompt = configMap['Claude System Prompt'] || null;
+    let systemPrompt = null;
+    if (rawSystemPrompt) {
+      if (rawSystemPrompt.length > MAX_SYSTEM_PROMPT_LENGTH) {
+        console.warn(`[sheets] Claude System Prompt is ${rawSystemPrompt.length} chars — truncated to ${MAX_SYSTEM_PROMPT_LENGTH}`);
+        systemPrompt = rawSystemPrompt.slice(0, MAX_SYSTEM_PROMPT_LENGTH);
+      } else {
+        systemPrompt = rawSystemPrompt;
+      }
+    }
+
     return {
-      systemPrompt: configMap['Claude System Prompt'] || null,
+      systemPrompt,
       businessHoursStart: parseInt(configMap['Business Hours Start'] || '8', 10),
       businessHoursEnd: parseInt(configMap['Business Hours End'] || '21', 10),
       maxPostAgeHours: parseInt(configMap['Max Post Age (hours)'] || '24', 10),
