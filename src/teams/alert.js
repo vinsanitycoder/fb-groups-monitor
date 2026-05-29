@@ -359,4 +359,60 @@ async function sendSessionExpiredAlert() {
   }
 }
 
-module.exports = { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert };
+// Compact status card sent at the end of every real run.
+// Gives the team a visible heartbeat — if the channel goes quiet they know
+// something is wrong. Intentionally small so it does not compete with lead cards.
+async function sendRunSummaryAlert(summary) {
+  const { default: fetch } = await import('node-fetch');
+
+  const time = new Date(summary.runAt).toLocaleString('en-PH', {
+    timeZone: 'Asia/Manila',
+    timeStyle: 'short',
+  });
+
+  const hasErrors  = summary.errors.length > 0;
+  const leadWord   = summary.leadsLogged === 1 ? '1 new lead' : `${summary.leadsLogged} new leads`;
+  const icon       = hasErrors ? '⚠️' : (summary.leadsLogged > 0 ? '🔔' : '✅');
+  const statusLine = `${icon} ${time} — ${summary.groupsChecked} groups scanned · ${leadWord}`;
+
+  const body = [
+    {
+      type: 'TextBlock',
+      text: statusLine,
+      wrap: true,
+      color: hasErrors ? 'Warning' : 'Default',
+      isSubtle: !hasErrors && summary.leadsLogged === 0,
+    },
+  ];
+
+  if (hasErrors) {
+    body.push({
+      type: 'TextBlock',
+      text: summary.errors.slice(0, 2).join(' · '),
+      wrap: true,
+      isSubtle: true,
+      size: 'Small',
+      spacing: 'None',
+    });
+  }
+
+  const card = {
+    type: 'AdaptiveCard',
+    version: '1.4',
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    body,
+  };
+
+  try {
+    const res = await fetch(config.teamsWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(card),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  } catch (err) {
+    throw new Error(`[teams] sendRunSummaryAlert failed: ${err.message}`);
+  }
+}
+
+module.exports = { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert, sendRunSummaryAlert };
