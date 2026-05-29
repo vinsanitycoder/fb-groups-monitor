@@ -10,7 +10,7 @@ const { scrapeGroup, scrapeComments } = require('./facebook/scraper');
 const { isRelevant } = require('./filters/relevance');
 const { loadConfig, appendLead } = require('./sheets/client');
 const { generateDraft } = require('./claude/draft');
-const { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert } = require('./teams/alert');
+const { sendLeadAlert, sendSystemAlert, sendSessionExpiredAlert, sendRunSummaryAlert } = require('./teams/alert');
 const { loadDedup, isDuplicate, markSeen, markSeenText, isDuplicateText, saveDedup, tokenizePost, isSimilarToSeen, isUrlDuplicate, markUrlSeen } = require('./utils/dedup');
 const { acquireLock, releaseLock } = require('./utils/lock');
 const { writeRunSummary } = require('./utils/logger');
@@ -18,8 +18,45 @@ const { loadGroupState, saveGroupState } = require('./utils/groupstate');
 
 const MAX_GROUPS_PER_RUN = 15;
 const ZERO_POSTS_LIMIT = 3;
+const LAST_RUN_PATH = path.join(__dirname, '..', 'data', 'last_run_at.json');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Retry an async function up to `attempts` times with a delay between tries.
+// Useful for network calls (Google Sheets, Teams) that fail on transient blips.
+async function withRetry(fn, { attempts = 3, delayMs = 5000, label = '' } = {}) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try { return await fn(); } catch (err) {
+      lastErr = err;
+      if (i < attempts) {
+        console.warn(`[index] ${label} failed (attempt ${i}/${attempts}): ${err.message} — retrying in ${delayMs / 1000}s`);
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// Returns true if the Mac was likely asleep or off during a scheduled run time,
+// meaning we should run now as a catch-up even though it is not a scheduled hour.
+// Logic: if it has been longer than the biggest gap between run times + 30 min,
+// at least one scheduled run was missed.
+function hasMissedScheduledRun(runTimes, now) {
+  try {
+    if (!fs.existsSync(LAST_RUN_PATH)) return false;
+    const { timestamp } = JSON.parse(fs.readFileSync(LAST_RUN_PATH, 'utf8'));
+    const hoursSince = (now - new Date(timestamp)) / (1000 * 60 * 60);
+    const sorted = [...runTimes].sort((a, b) => a - b);
+    const maxGapHours = sorted.length > 1
+      ? Math.max(...sorted.slice(1).map((t, i) => t - sorted[i]))
+      : 8; // default: treat as missed if more than 8h since last run
+    return hoursSince >= maxGapHours; // trigger as soon as the max gap is exceeded
+  } catch {
+    return false;
+  }
+}
+
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -243,7 +280,9 @@ async function main() {
 
     // ── 1. Load config from Sheets ──────────────────────────────────────────
     console.log('[index] Loading config from Google Sheets...');
-    const sheetConfig = await loadConfig();
+    const sheetConfig = await withRetry(() => loadConfig(), {
+      attempts: 3, delayMs: 8000, label: 'loadConfig',
+    });
     const { keywords, groups, signalPhrases, disqualifiers, competitorSignals, fbPageUrl, linkProbability, systemPrompt, monitorEnabled, businessHoursStart, businessHoursEnd, commentAlertThreshold, likeAlertThreshold, runTimes } = sheetConfig;
     console.log(`[index] Config loaded — ${groups.length} group(s), ${keywords.length} keywords`);
 
@@ -259,12 +298,41 @@ async function main() {
       return;
     }
 
-    // Run times check — only proceed at the configured hours (default: 8, 12, 17).
-    // PM2 fires this script every hour; it exits here if it is not a scheduled run time.
-    // To change the schedule, update "Run Times" in the Google Sheet Config tab — no restart needed.
-    if (process.env.TEST_MODE !== '1' && !runTimes.includes(hour)) {
+    // Run times check — only proceed at the configured hours (default: 8, 12, 17),
+    // OR when catching up on a missed run (Mac was asleep/off during a scheduled time).
+    const isScheduledHour = runTimes.includes(hour);
+    const isCatchupRun    = !isScheduledHour && hasMissedScheduledRun(runTimes, now);
+
+    if (process.env.TEST_MODE !== '1' && !isScheduledHour && !isCatchupRun) {
       console.log(`[index] Not a scheduled run time (${hour}:xx, configured: ${runTimes.join(', ')}). Exiting.`);
       return;
+    }
+
+    // Calculate how long the Mac was offline so we can tailor the Teams message
+    // and use a deeper scroll to recover older posts.
+    let hoursSinceLastRun = 0;
+    if (isCatchupRun) {
+      try {
+        const { timestamp } = JSON.parse(fs.readFileSync(LAST_RUN_PATH, 'utf8'));
+        hoursSinceLastRun = (now - new Date(timestamp)) / (1000 * 60 * 60);
+      } catch (_) {}
+
+      const daysSince    = hoursSinceLastRun / 24;
+      const durationText = daysSince >= 2
+        ? `approximately ${Math.round(daysSince)} days`
+        : daysSince >= 1
+          ? 'approximately 1 day'
+          : `approximately ${Math.round(hoursSinceLastRun)} hours`;
+
+      const warningLine = hoursSinceLastRun >= 24
+        ? ' Posts from the offline period may have been missed — the scan will scroll deeper to recover as many as possible.'
+        : '';
+
+      console.log(`[index] Catch-up run — offline for ${durationText}. Running now.`);
+      await sendSystemAlert(
+        'FB Monitor — Resuming After Offline Period',
+        `The monitor was offline for ${durationText} (Mac was off, asleep, or had no internet).${warningLine}`
+      ).catch(() => {});
     }
 
     if (!groups.length) {
@@ -280,7 +348,9 @@ async function main() {
 
     // ── 3. Login ────────────────────────────────────────────────────────────
     const sessionPath = getSessionPath();
-    const { browser: b, context, page } = await launchBrowser(sessionPath);
+    const { browser: b, context, page } = await launchBrowser(sessionPath, {
+      headless: process.env.SHOW_BROWSER !== '1',
+    });
     browser = b;
 
     try {
@@ -302,6 +372,7 @@ async function main() {
     console.log(`[index] Scraping ${targetGroups.length} group(s) in random order`);
 
     let consecutiveZeroPosts = 0;
+    let loginRedirectCount = 0;
     // Track URLs alerted this run — prevents the same post firing twice if it
     // somehow survives the scraper merge (e.g. across two groups in one run).
     const alertedUrls = new Set();
@@ -318,7 +389,11 @@ async function main() {
 
       try {
         posts = await scrapeGroup(page, groupUrl, {
-          scrollPasses: isInitialCatchup ? 20 : 5,
+          scrollPasses: isInitialCatchup          ? 20  // first ever run — deep scroll
+            : hoursSinceLastRun > 48              ? 20  // 2+ days offline
+            : hoursSinceLastRun > 24              ? 12  // 1–2 days offline
+            : hoursSinceLastRun > 8               ? 8   // missed a few runs
+            : 5,                                        // normal run
         });
       } catch (err) {
         if (err.message === 'CHECKPOINT_DETECTED') {
@@ -331,6 +406,13 @@ async function main() {
         if (err.message === 'LOGIN_REDIRECT') {
           console.warn(`[index] Login redirect on ${groupUrl} — skipping`);
           summary.errors.push(`Login redirect: ${groupUrl}`);
+          loginRedirectCount++;
+          // If 3+ groups all redirect to login, the session has expired mid-run
+          if (loginRedirectCount >= 3) {
+            console.warn('[index] 3+ login redirects — session expired mid-run, alerting and stopping');
+            await sendSessionExpiredAlert().catch(() => {});
+            return;
+          }
           continue;
         }
         if (err.message === 'NOT_JOINED') {
@@ -414,6 +496,13 @@ async function main() {
     summary.errors.push(err.message);
   } finally {
     if (browser) await browser.close().catch(() => {});
+    // Record when this run happened — used by hasMissedScheduledRun() to detect
+    // catch-up situations on the next fire (e.g. Mac waking after sleep).
+    try {
+      const dataDir = path.join(__dirname, '..', 'data');
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(LAST_RUN_PATH, JSON.stringify({ timestamp: new Date().toISOString() }));
+    } catch (_) {}
     // Save dedup cache in finally so it persists even if the run crashes mid-way.
     // Guard against null — dedupCache is null if the crash happened before loadDedup() ran.
     if (dedupCache) {
@@ -436,6 +525,15 @@ async function main() {
     `${summary.groupsChecked} group(s), ${summary.postsFound} scraped, ` +
     `${evaluated} evaluated, ${summary.leadsLogged} leads logged`
   );
+
+  // Send a compact status card so the team can see the monitor is alive.
+  // Only fires for real runs (groups were actually checked), not early exits.
+  // Skipped in TEST_MODE to avoid noise during development.
+  if (process.env.TEST_MODE !== '1' && summary.groupsChecked > 0) {
+    await sendRunSummaryAlert(summary).catch(err =>
+      console.warn('[index] Run summary alert failed:', err.message)
+    );
+  }
 }
 
 main();

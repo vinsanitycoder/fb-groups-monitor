@@ -6,13 +6,13 @@ const stealth = require('puppeteer-extra-plugin-stealth');
 
 chromium.use(stealth());
 
-async function launchBrowser(sessionPath) {
+async function launchBrowser(sessionPath, { headless = true } = {}) {
   const contextOptions = (sessionPath && fs.existsSync(sessionPath))
     ? { storageState: sessionPath }
     : {};
 
   const browser = await chromium.launch({
-    headless: false,
+    headless,
     args: ['--no-sandbox', '--disable-blink-features=AutomationControlled'],
   });
 
