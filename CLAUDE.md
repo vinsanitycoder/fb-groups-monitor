@@ -47,7 +47,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Power Automate Workflows only** — Teams Incoming Webhooks retired May 2026. All Teams code uses AdaptiveCard format.
 - **Sequential group scraping** — never parallel tabs. More human-like, less detectable by Facebook.
 - **Claude Haiku only** — no Sonnet. Prompt caching not implemented (Haiku minimum is 1,024 tokens; our prompt is ~35 tokens — below threshold).
-- **Two-layer filter before Claude** — keyword match AND signal phrase match required. Claude never called on noise.
+- **Signal phrases currently disabled** — `isRelevant()` accepts signal phrases from the Sheet but does not enforce them (parameter received, not checked). Keyword match alone is the current active filter. Re-enable by adding the signal phrase check back to `relevance.js` when ready. Do not remove the parameter or the Sheet loading — the infrastructure is intentionally kept in place.
 - **Five-layer deduplication** — `seen_posts.json` stores post ID, SHA-1 of text, and SHA-1 of URL (cross-run). In-memory per run: URL Set + Jaccard similarity (85% word overlap). `data/group_state.json` stores last-seen timestamp per group; posts older than the previous scrape of that group are filtered before the pipeline. This covers DOM vs GraphQL ID format differences, near-identical text, and repeat alerts across runs.
 - **Sheets write uses `RAW` not `USER_ENTERED`** — prevents formula injection when Facebook post text (e.g. `=IMPORTDATA(...)`) is written to the Leads tab. Never revert this.
 - **Atomic lock file (`wx` flag)** — `acquireLock()` uses `{ flag: 'wx' }` (O_EXCL) for an atomic exclusive create. Eliminates the TOCTOU race where two processes could both pass an `existsSync` check before either wrote the file.
@@ -81,14 +81,18 @@ Non-technical operators — no developers on the operations side. Every instruct
 - `session/` — Facebook browser session storage (gitignored, never commit)
 - `data/seen_posts.json` — deduplication cache, 7-day rolling window (gitignored)
 - `data/group_state.json` — per-group last-seen timestamps (gitignored)
+- `data/last_run_at.json` — timestamp of last completed run; used by catch-up mechanism (gitignored)
 - `logs/` — per-run logs (gitignored)
 
 ## Essential Commands
-    node src/index.js              # run once manually (for testing)
-    node scripts/login.js          # manual Facebook login — run when session expires
-    pm2 start ecosystem.config.js  # start with PM2 scheduling
-    pm2 logs fb-monitor            # view live logs
-    pm2 status                     # check if running
+    node src/index.js                        # run once manually (for testing)
+    TEST_MODE=1 node src/index.js            # bypass schedule + weekend checks
+    SHOW_BROWSER=1 node src/index.js         # show browser window during run (debugging)
+    node scripts/login.js                    # manual Facebook login — run when session expires
+    pm2 start ecosystem.config.js            # start with PM2 scheduling
+    pm2 delete fb-monitor && pm2 start ecosystem.config.js && pm2 save  # restart + save
+    pm2 logs fb-monitor                      # view live logs
+    pm2 status                               # check if running
 
 ## Code Conventions (Non-Negotiable)
 - All credentials via environment variables — never hardcoded, never in comments
@@ -126,7 +130,9 @@ Non-technical operators — no developers on the operations side. Every instruct
 - **Claude fallback** — if Claude fails after 2 retries, send Teams alert with "Draft unavailable" message. Never drop a lead because Claude is down. Same fallback fires if a draft is discarded due to prompt injection detection.
 - **Formula injection** — `appendLead` uses `valueInputOption: 'RAW'`. Do NOT change this back to `USER_ENTERED`. Facebook post text starting with `=`, `+`, or `-` would execute as a formula in the Leads tab.
 - **Prompt injection guards** — `draft.js` strips instruction-override phrases and rejects drafts containing unexpected URLs. Do not remove. The `Claude System Prompt` sheet value is capped at 500 chars in `loadConfig` — values beyond that are truncated with a warning log.
-- **Session expired handling** — `ensureLoggedIn` throws `SESSION_EXPIRED`. `index.js` catches it and sends a detailed Teams card with step-by-step re-login instructions. Do NOT add auto-login back.
+- **Session expired handling** — `ensureLoggedIn` throws `SESSION_EXPIRED` instead of attempting auto-login (Facebook detects and loops the auto-fill). `index.js` catches it and sends a detailed Teams card (`sendSessionExpiredAlert`) with step-by-step re-login instructions for non-technical users. Mid-run expiry is detected when 3+ consecutive groups return `LOGIN_REDIRECT`. Do NOT add auto-login back to `ensureLoggedIn` — use `scripts/login.js` for manual re-login.
+- **Catch-up mechanism** — PM2 fires hourly (Mon–Fri). `hasMissedScheduledRun()` compares `data/last_run_at.json` against the configured run times; if the gap exceeds the largest interval between scheduled runs, it runs as a catch-up regardless of the current hour. Scroll depth scales with offline duration: normal=5, >8h=8, >24h=12, >48h=20 passes.
+- **Run summary card** — `sendRunSummaryAlert()` fires at the end of every real run (not TEST_MODE, only when `groupsChecked > 0`). Gives the team a visible heartbeat in Teams. Skipped for early exits (wrong run time, no groups, etc.).
 - **Mac Energy Saver** — must be set to never sleep on power adapter. If not set, cron runs are silently skipped.
 
 ## Prompt Caching
@@ -143,7 +149,7 @@ Non-technical operators — no developers on the operations side. Every instruct
 - Headed browser mode (`headless: false`) works identically on both
 
 ## Bot Detection Mitigation (Facebook)
-- **Headed mode** (`headless: false`) — dramatically reduces detection vs headless
+- **Headless by default** — `launchBrowser` defaults to `headless: true` to avoid cluttering the desktop. Pass `{ headless: false }` or set `SHOW_BROWSER=1` env var to make the browser visible for debugging. `scripts/login.js` always opens headed since the user must interact.
 - **Randomised delays**: 45–90 seconds between groups (not fixed), 3–7 seconds between scrolls
 - **Shuffle group order** each run — never visit in the same sequence
 - **Max 15 groups per run** — hard limit regardless of how many are configured
