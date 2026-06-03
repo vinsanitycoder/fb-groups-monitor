@@ -17,5 +17,17 @@ module.exports = {
         NODE_ENV: 'production',
       },
     },
+    {
+      name: 'fb-watchdog',
+      script: 'scripts/watchdog.js',
+      // Fire every 2 hours at the :30 mark, Mon–Fri.
+      // Offset from the monitor's :00 cron to avoid overlapping with real scraping runs.
+      // Checks PM2 crash status + Facebook session validity, alerts via Teams if either fails.
+      cron_restart: '30 */2 * * 1-5',
+      autorestart: false,
+      env: {
+        NODE_ENV: 'production',
+      },
+    },
   ],
 };

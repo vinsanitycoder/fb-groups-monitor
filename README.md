@@ -38,6 +38,7 @@ This tool watches those groups for you, around the clock or for a certain time p
 4. [Windows Setup](#4-windows-setup)
 5. [Daily Operations](#5-daily-operations)
 6. [Troubleshooting](#6-troubleshooting)
+7. [Environment Variables](#environment-variables)
 
 ---
 
@@ -207,6 +208,8 @@ node scripts/login.js
 
 A browser window will open on Facebook. Log in manually using the monitoring account. If Facebook asks for a verification code, enter it. The browser will close automatically once the session is saved.
 
+> The session is stored in a `profile/` folder inside the project. This keeps your full browser profile — cookies, site data, and fingerprint — between runs, so Facebook sees the same trusted device every time. Sessions typically last weeks rather than days.
+
 ---
 
 ### Step 6 — Install PM2
@@ -221,7 +224,21 @@ Enter your Mac login password when prompted (nothing appears as you type — tha
 
 ---
 
-### Step 7 — Start the scheduler
+### Step 7 — Create the re-login shortcut
+
+This puts a double-click shortcut on your Desktop so you can re-login quickly if the session ever expires — no Terminal commands needed.
+
+```
+bash scripts/setup-shortcut.sh
+```
+
+You should see `✓ Shortcut created` in the output. Look for **"FB Monitor Login"** on your Desktop to confirm.
+
+> The first time you double-click it, macOS may ask "Are you sure you want to open this?" — click **Open**. It will not ask again after that.
+
+---
+
+### Step 8 — Start the scheduler
 
 Run these one at a time:
 
@@ -243,7 +260,7 @@ You should see `[PM2] Successfully saved`.
 
 ---
 
-### Step 8 — Prevent the Mac from sleeping
+### Step 9 — Prevent the Mac from sleeping
 
 1. Click the Apple menu → **System Settings**
 2. Click **Battery** → **Options**
@@ -253,14 +270,17 @@ If this is a laptop, keep it plugged in — this setting only works on power.
 
 ---
 
-### Step 9 — Confirm
+### Step 10 — Confirm
 
 Run:
 ```
 pm2 status
 ```
 
-You should see `fb-monitor` in the list. The next morning at your configured start time, you will receive a Teams message: **"FB Monitor — Started"**. That confirms everything is working.
+You should see **two** processes in the list: `fb-monitor` and `fb-watchdog`. Both are normal.
+
+- `fb-monitor` — scrapes groups and sends lead alerts at your configured run times
+- `fb-watchdog` — runs every 2 hours, checks that the monitor is healthy and the Facebook session is still valid. If anything is wrong, it sends a Teams alert automatically.
 
 ---
 
@@ -376,17 +396,16 @@ Google Sheet → **Keywords** tab → add or delete entries (one per row, not ca
 
 ### Re-login when the session expires
 
-If the Facebook session expires, the monitor will send a Teams alert with step-by-step instructions. In summary:
+The watchdog checks your session every 2 hours and sends a Teams alert if it has expired. When that happens:
 
-```
-node scripts/login.js
-```
+1. Find **"FB Monitor Login"** on your Desktop
+2. Double-click it
+3. Log in to Facebook in the browser window that opens
+4. Wait for the Terminal window to show **"Done! Monitor is running again."** and close
 
-Log in manually, then:
+That is all — the shortcut handles the login and restart automatically.
 
-```
-pm2 start ecosystem.config.js
-```
+> If you cannot find the shortcut, run `bash scripts/setup-shortcut.sh` in Terminal from the project folder to recreate it.
 
 ---
 

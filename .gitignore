@@ -1,5 +1,6 @@
 node_modules/
 session/
+profile/
 data/
 logs/
 .env

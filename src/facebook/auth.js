@@ -150,8 +150,7 @@ async function ensureLoggedIn(context, page) {
   }
 
   console.log('[auth] Login verified from session — no re-login needed');
-  // Session already valid: save immediately (refreshes cookie expiry)
-  await saveSession(context, false);
+  // Profile is persisted automatically by launchPersistentContext — no explicit save needed
 
   return { reloginNeeded: false, hadSession };
 }

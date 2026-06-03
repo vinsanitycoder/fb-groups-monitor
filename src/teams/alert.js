@@ -242,101 +242,54 @@ async function sendSessionExpiredAlert() {
       },
       {
         type: 'TextBlock',
-        text: 'Facebook logged out the monitor. It has stopped running. Follow the steps below exactly to get it running again — takes about 2 minutes.',
+        text: 'Facebook logged out the monitor. It has stopped running. Use the desktop shortcut below to get it running again — takes about 2 minutes.',
         wrap: true,
         spacing: 'Medium',
       },
 
-      // ── Step 1 ──────────────────────────────────────────────────────────────
+      // ── Shortcut instruction ─────────────────────────────────────────────────
       {
         type: 'TextBlock',
-        text: 'STEP 1 — Open Terminal',
+        text: 'STEP 1 — Find the shortcut on your Desktop',
         weight: 'Bolder',
         spacing: 'Large',
         color: 'Accent',
       },
       {
         type: 'TextBlock',
-        text: 'Press the Command key (⌘) and the Space bar at the same time. A search box appears. Type the word Terminal and press Enter. A window with a black or white background will open — that is Terminal.',
+        text: 'Look on your Mac Desktop for a file called "FB Monitor Login". It looks like a Terminal icon with a shell script badge.',
         wrap: true,
         spacing: 'Small',
       },
-
-      // ── Step 2 ──────────────────────────────────────────────────────────────
       {
         type: 'TextBlock',
-        text: 'STEP 2 — Go to the monitor folder',
+        text: 'STEP 2 — Double-click it',
         weight: 'Bolder',
         spacing: 'Large',
         color: 'Accent',
       },
       {
         type: 'TextBlock',
-        text: 'Click inside the Terminal window, then copy and paste the line below exactly as shown and press Enter:',
+        text: 'Double-click "FB Monitor Login". A Terminal window will open and a browser window will appear on Facebook. Log in normally with the monitoring account. If Facebook asks for a verification code, complete it. The browser will close by itself when done.',
         wrap: true,
         spacing: 'Small',
       },
       {
         type: 'TextBlock',
-        text: `cd "${PROJECT_PATH}"`,
-        fontType: 'Monospace',
-        color: 'Good',
-        spacing: 'Small',
-        wrap: true,
-      },
-
-      // ── Step 3 ──────────────────────────────────────────────────────────────
-      {
-        type: 'TextBlock',
-        text: 'STEP 3 — Run the login script',
+        text: 'STEP 3 — Wait for the confirmation',
         weight: 'Bolder',
         spacing: 'Large',
         color: 'Accent',
       },
       {
         type: 'TextBlock',
-        text: 'Copy and paste this next line into Terminal and press Enter:',
+        text: 'The Terminal window will show "Done! Monitor is running again." and then close. That is it — no other steps needed.',
         wrap: true,
         spacing: 'Small',
       },
       {
         type: 'TextBlock',
-        text: 'node scripts/login.js',
-        fontType: 'Monospace',
-        color: 'Good',
-        spacing: 'Small',
-      },
-      {
-        type: 'TextBlock',
-        text: 'A browser window will open on Facebook. Log in normally with the monitoring account email and password. If Facebook asks for a verification code or shows a security check, complete it. The browser will close by itself once it is done.',
-        wrap: true,
-        spacing: 'Small',
-      },
-
-      // ── Step 4 ──────────────────────────────────────────────────────────────
-      {
-        type: 'TextBlock',
-        text: 'STEP 4 — Restart the monitor',
-        weight: 'Bolder',
-        spacing: 'Large',
-        color: 'Accent',
-      },
-      {
-        type: 'TextBlock',
-        text: 'After the browser closes, go back to Terminal and paste this last line, then press Enter:',
-        wrap: true,
-        spacing: 'Small',
-      },
-      {
-        type: 'TextBlock',
-        text: 'pm2 start ecosystem.config.js',
-        fontType: 'Monospace',
-        color: 'Good',
-        spacing: 'Small',
-      },
-      {
-        type: 'TextBlock',
-        text: '✅ The monitor is running again. You will receive the usual daily startup message at 8 AM to confirm.',
+        text: '✅ The monitor will resume automatically after you complete the login.',
         wrap: true,
         spacing: 'Medium',
         color: 'Good',
