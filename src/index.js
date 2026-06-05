@@ -262,6 +262,7 @@ async function main() {
     postsSkippedOld: 0, // filtered out by last-run timestamp (not new since last scrape)
     leadsLogged: 0,
     durationMs: 0,
+    scrapeErrors: 0,   // groups that failed to scrape (navigation/network errors)
     errors: [],
   };
 
@@ -421,6 +422,7 @@ async function main() {
         }
         console.error(`[index] Scrape error (${groupUrl}): ${err.message}`);
         summary.errors.push(`Scrape error: ${err.message}`);
+        summary.scrapeErrors++;
         continue;
       }
 
@@ -526,13 +528,27 @@ async function main() {
     `${evaluated} evaluated, ${summary.leadsLogged} leads logged`
   );
 
-  // Send a compact status card so the team can see the monitor is alive.
-  // Only fires for real runs (groups were actually checked), not early exits.
+  // Decide which Teams card to send.
+  // If half or more of the checked groups failed to scrape, the run did not
+  // really work — likely a network outage or a Facebook-wide block. Send a
+  // distinct failure alert so the team knows, instead of a quiet summary that
+  // looks like a normal slow day. Otherwise send the usual heartbeat summary.
   // Skipped in TEST_MODE to avoid noise during development.
   if (process.env.TEST_MODE !== '1' && summary.groupsChecked > 0) {
-    await sendRunSummaryAlert(summary).catch(err =>
-      console.warn('[index] Run summary alert failed:', err.message)
-    );
+    const mostlyFailed = summary.scrapeErrors >= Math.ceil(summary.groupsChecked / 2);
+    if (mostlyFailed) {
+      await sendSystemAlert(
+        '⚠️ FB Monitor — Run Mostly Failed',
+        `${summary.scrapeErrors} of ${summary.groupsChecked} groups failed to load this run, so very few or no posts were checked.\n\n` +
+        `This is usually a temporary internet problem on the computer running the monitor, or Facebook briefly blocking requests. ` +
+        `The monitor will try again automatically at the next scheduled run.\n\n` +
+        `If you see this alert repeatedly, check that the computer has a stable internet connection.`
+      ).catch(err => console.warn('[index] Failure alert failed:', err.message));
+    } else {
+      await sendRunSummaryAlert(summary).catch(err =>
+        console.warn('[index] Run summary alert failed:', err.message)
+      );
+    }
   }
 }
 
