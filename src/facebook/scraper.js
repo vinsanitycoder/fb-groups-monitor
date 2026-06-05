@@ -143,11 +143,27 @@ async function scrapeGroup(page, groupUrl, { scrollPasses = 5 } = {}) {
   };
   page.on('response', graphqlHandler);
 
-  try {
-    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  } catch (err) {
+  // Navigate with one retry. A transient network change (ERR_NETWORK_CHANGED) or
+  // an interrupted navigation leaves the shared page on an error URL; the next
+  // group's goto then collides with the unsettled navigation and the failure
+  // cascades across the whole run. Resetting to about:blank settles any in-flight
+  // navigation before retrying, so a single blip costs one group, not the run.
+  let navigated = false;
+  let lastNavErr = null;
+  for (let attempt = 0; attempt < 2 && !navigated; attempt++) {
+    try {
+      await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      navigated = true;
+    } catch (err) {
+      lastNavErr = err;
+      // Reset the tab so the failed navigation does not leak into the next attempt/group
+      await page.goto('about:blank', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(randInt(2000, 4000));
+    }
+  }
+  if (!navigated) {
     page.off('response', graphqlHandler);
-    throw new Error(`[scraper] Navigation failed for ${groupUrl}: ${err.message}`);
+    throw new Error(`[scraper] Navigation failed for ${groupUrl}: ${lastNavErr && lastNavErr.message}`);
   }
 
   const url = page.url();
