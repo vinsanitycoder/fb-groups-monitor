@@ -57,6 +57,48 @@ function hasMissedScheduledRun(runTimes, now) {
   }
 }
 
+// ── Auto-retry after a mostly-failed run ────────────────────────────────────────
+// When a run mostly fails (e.g. a network outage), drop a flag so the NEXT hourly
+// PM2 fire runs again even if it is not a scheduled hour — recovering within the hour
+// instead of waiting for the next scheduled slot. Capped so a sustained block does not
+// retry forever. Weekend + business-hours guards still apply (they exit earlier), so
+// retries never fire at night or on weekends.
+const RETRY_FLAG_PATH = path.join(__dirname, '..', 'data', 'retry_pending.json');
+const MAX_AUTO_RETRIES = 2;     // extra runs after a failure before giving up
+const RETRY_EXPIRY_HOURS = 12;  // ignore a flag older than this (stale, e.g. left overnight)
+
+function hasPendingRetry(now) {
+  try {
+    if (!fs.existsSync(RETRY_FLAG_PATH)) return false;
+    const { at } = JSON.parse(fs.readFileSync(RETRY_FLAG_PATH, 'utf8'));
+    const hoursSince = (now - new Date(at)) / (1000 * 60 * 60);
+    return hoursSince <= RETRY_EXPIRY_HOURS;
+  } catch {
+    return false;
+  }
+}
+
+function clearRetryFlag() {
+  try { if (fs.existsSync(RETRY_FLAG_PATH)) fs.unlinkSync(RETRY_FLAG_PATH); } catch (_) {}
+}
+
+// Schedule a retry on the next fire, unless the retry budget is already used up.
+function scheduleRetry(now) {
+  try {
+    let count = 0;
+    if (fs.existsSync(RETRY_FLAG_PATH)) {
+      try { count = JSON.parse(fs.readFileSync(RETRY_FLAG_PATH, 'utf8')).count || 0; } catch (_) {}
+    }
+    if (count >= MAX_AUTO_RETRIES) {
+      clearRetryFlag(); // budget exhausted — stop until the next scheduled run
+      console.warn(`[index] Auto-retry budget exhausted (${MAX_AUTO_RETRIES}) — waiting for next scheduled run`);
+      return;
+    }
+    fs.writeFileSync(RETRY_FLAG_PATH, JSON.stringify({ count: count + 1, at: now.toISOString() }));
+    console.warn(`[index] Run mostly failed — auto-retry scheduled for the next hourly fire (${count + 1}/${MAX_AUTO_RETRIES})`);
+  } catch (_) {}
+}
+
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -303,10 +345,16 @@ async function main() {
     // OR when catching up on a missed run (Mac was asleep/off during a scheduled time).
     const isScheduledHour = runTimes.includes(hour);
     const isCatchupRun    = !isScheduledHour && hasMissedScheduledRun(runTimes, now);
+    // Retry run — a previous run mostly failed and left a retry flag. Run now even
+    // though it is not a scheduled hour, to recover sooner than the next slot.
+    const isRetryRun      = !isScheduledHour && !isCatchupRun && hasPendingRetry(now);
 
-    if (process.env.TEST_MODE !== '1' && !isScheduledHour && !isCatchupRun) {
+    if (process.env.TEST_MODE !== '1' && !isScheduledHour && !isCatchupRun && !isRetryRun) {
       console.log(`[index] Not a scheduled run time (${hour}:xx, configured: ${runTimes.join(', ')}). Exiting.`);
       return;
+    }
+    if (isRetryRun) {
+      console.log('[index] Auto-retry run — a previous run mostly failed; retrying outside the normal schedule.');
     }
 
     // Calculate how long the Mac was offline so we can tailor the Teams message
@@ -537,14 +585,18 @@ async function main() {
   if (process.env.TEST_MODE !== '1' && summary.groupsChecked > 0) {
     const mostlyFailed = summary.scrapeErrors >= Math.ceil(summary.groupsChecked / 2);
     if (mostlyFailed) {
+      // Drop a flag so the next hourly fire retries even outside the schedule.
+      scheduleRetry(now);
       await sendSystemAlert(
         '⚠️ FB Monitor — Run Mostly Failed',
         `${summary.scrapeErrors} of ${summary.groupsChecked} groups failed to load this run, so very few or no posts were checked.\n\n` +
         `This is usually a temporary internet problem on the computer running the monitor, or Facebook briefly blocking requests. ` +
-        `The monitor will try again automatically at the next scheduled run.\n\n` +
+        `The monitor will automatically try again within the hour — no action needed.\n\n` +
         `If you see this alert repeatedly, check that the computer has a stable internet connection.`
       ).catch(err => console.warn('[index] Failure alert failed:', err.message));
     } else {
+      // Run succeeded — clear any pending retry so we stop retrying.
+      clearRetryFlag();
       await sendRunSummaryAlert(summary).catch(err =>
         console.warn('[index] Run summary alert failed:', err.message)
       );
