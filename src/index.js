@@ -43,20 +43,26 @@ async function withRetry(fn, { attempts = 3, delayMs = 5000, label = '' } = {}) 
   throw lastErr;
 }
 
-// Returns true if the Mac was likely asleep or off during a scheduled run time,
-// meaning we should run now as a catch-up even though it is not a scheduled hour.
-// Logic: if it has been longer than the biggest gap between run times + 30 min,
-// at least one scheduled run was missed.
+// Largest gap (in hours) between consecutive scheduled run times. A successful run
+// should normally happen at least this often; a longer silence means we missed one.
+function maxRunGapHours(runTimes) {
+  const sorted = [...runTimes].sort((a, b) => a - b);
+  return sorted.length > 1
+    ? Math.max(...sorted.slice(1).map((t, i) => t - sorted[i]))
+    : 8; // single run time → treat >8h since success as a miss
+}
+
+// Returns true if we missed a scheduled run — i.e. it has been longer than the
+// biggest gap between run times since the last SUCCESSFUL scrape. Keyed on
+// last_success_at.json (NOT last_run_at.json, which updates on every fire incl.
+// failures/no-ops) so failed or asleep-through scheduled runs are correctly
+// detected and made up on the next connection.
 function hasMissedScheduledRun(runTimes, now) {
   try {
-    if (!fs.existsSync(LAST_RUN_PATH)) return false;
-    const { timestamp } = JSON.parse(fs.readFileSync(LAST_RUN_PATH, 'utf8'));
-    const hoursSince = (now - new Date(timestamp)) / (1000 * 60 * 60);
-    const sorted = [...runTimes].sort((a, b) => a - b);
-    const maxGapHours = sorted.length > 1
-      ? Math.max(...sorted.slice(1).map((t, i) => t - sorted[i]))
-      : 8; // default: treat as missed if more than 8h since last run
-    return hoursSince >= maxGapHours; // trigger as soon as the max gap is exceeded
+    if (!fs.existsSync(LAST_SUCCESS_PATH)) return false;
+    const { at } = JSON.parse(fs.readFileSync(LAST_SUCCESS_PATH, 'utf8'));
+    const hoursSince = (now - new Date(at)) / (1000 * 60 * 60);
+    return hoursSince >= maxRunGapHours(runTimes);
   } catch {
     return false;
   }
@@ -365,32 +371,22 @@ async function main() {
       console.log('[index] Auto-retry run — a previous run mostly failed; retrying outside the normal schedule.');
     }
 
-    // Calculate how long the Mac was offline so we can tailor the Teams message
-    // and use a deeper scroll to recover older posts.
-    let hoursSinceLastRun = 0;
-    if (isCatchupRun) {
-      try {
-        const { timestamp } = JSON.parse(fs.readFileSync(LAST_RUN_PATH, 'utf8'));
-        hoursSinceLastRun = (now - new Date(timestamp)) / (1000 * 60 * 60);
-      } catch (_) {}
+    // How long since the last SUCCESSFUL scrape — drives make-up scroll depth and
+    // the catch-up message. Based on last_success_at.json (not last_run, which updates
+    // on every fire), so missed/failed/slept-through scheduled runs are accounted for.
+    let hoursSinceLastSuccess = Infinity;
+    try {
+      const { at } = JSON.parse(fs.readFileSync(LAST_SUCCESS_PATH, 'utf8'));
+      hoursSinceLastSuccess = (now - new Date(at)) / (1000 * 60 * 60);
+    } catch (_) {}
 
-      const daysSince    = hoursSinceLastRun / 24;
-      const durationText = daysSince >= 2
-        ? `approximately ${Math.round(daysSince)} days`
-        : daysSince >= 1
-          ? 'approximately 1 day'
-          : `approximately ${Math.round(hoursSinceLastRun)} hours`;
-
-      const warningLine = hoursSinceLastRun >= 24
-        ? ' Posts from the offline period may have been missed — the scan will scroll deeper to recover as many as possible.'
-        : '';
-
-      console.log(`[index] Catch-up run — offline for ${durationText}. Running now.`);
-      await sendSystemAlert(
-        'FB Monitor — Resuming After Offline Period',
-        `The monitor was offline for ${durationText} (Mac was off, asleep, or had no internet).${warningLine}`
-      ).catch(() => {});
-    }
+    // A make-up run is any off-schedule run (catch-up after sleep, or retry after an
+    // outage) where we have been blind longer than the normal gap between runs. It
+    // scrolls deeper (below) and announces itself AFTER a successful login (see §3),
+    // so an outage where login still fails does not spam the channel.
+    const isMakeupRun = (isCatchupRun || isRetryRun) &&
+      Number.isFinite(hoursSinceLastSuccess) &&
+      hoursSinceLastSuccess >= maxRunGapHours(runTimes);
 
     if (!groups.length) {
       console.warn('[index] No groups configured in Sheets. Exiting.');
@@ -421,6 +417,24 @@ async function main() {
       throw err;
     }
 
+    // Login succeeded — if this is a make-up run, tell the team we are catching up on
+    // the missed scheduled run(s). Sent here (post-login) so a still-offline retry that
+    // fails to connect does not announce a catch-up it cannot perform.
+    if (isMakeupRun) {
+      const daysSince    = hoursSinceLastSuccess / 24;
+      const durationText = daysSince >= 2 ? `approximately ${Math.round(daysSince)} days`
+        : daysSince >= 1 ? 'approximately 1 day'
+        : `approximately ${Math.round(hoursSinceLastSuccess)} hours`;
+      const warningLine = hoursSinceLastSuccess >= 24
+        ? ' Posts from the missed period may have been skipped — the scan is scrolling deeper to recover as many as possible.'
+        : '';
+      console.log(`[index] Make-up run — no successful scan for ${durationText}. Catching up now.`);
+      await sendSystemAlert(
+        'FB Monitor — Catching Up On Missed Runs',
+        `The monitor missed its scheduled scan for ${durationText} (computer off/asleep, or no internet). It reconnected and is running now to make up for the missed run(s).${warningLine}`
+      ).catch(() => {});
+    }
+
     // ── 4. Prepare group list — shuffle + cap at 15 (or TEST_GROUPS if set) ──
     const groupLimit = process.env.TEST_GROUPS
       ? parseInt(process.env.TEST_GROUPS, 10)
@@ -446,10 +460,13 @@ async function main() {
 
       try {
         posts = await scrapeGroup(page, groupUrl, {
+          // Scroll depth scales with how long since the last SUCCESSFUL scrape, so a
+          // make-up run after missed/failed runs scrolls back far enough to recover
+          // the missed posts (dedup drops any already seen).
           scrollPasses: isInitialCatchup          ? 20  // first ever run — deep scroll
-            : hoursSinceLastRun > 48              ? 20  // 2+ days offline
-            : hoursSinceLastRun > 24              ? 12  // 1–2 days offline
-            : hoursSinceLastRun > 8               ? 8   // missed a few runs
+            : hoursSinceLastSuccess > 48          ? 20  // 2+ days of missed runs
+            : hoursSinceLastSuccess > 24          ? 12  // 1–2 days
+            : hoursSinceLastSuccess > 8           ? 8   // missed a few runs / overnight
             : 5,                                        // normal run
         });
       } catch (err) {
