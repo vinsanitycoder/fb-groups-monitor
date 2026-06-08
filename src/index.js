@@ -260,6 +260,9 @@ async function main() {
   const todayStr = now.toISOString().slice(0, 10);
   const hour = now.getHours();
   const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+  // Whether a retry was already pending before this run started — used to throttle
+  // failure alerts so a sustained outage sends ~one alert per streak, not one per hour.
+  const retryFlagExistedAtStart = hasPendingRetry(now);
 
   if (process.env.TEST_MODE !== '1') {
     if (dayOfWeek === 0 || dayOfWeek === 6) {
@@ -582,19 +585,39 @@ async function main() {
   // distinct failure alert so the team knows, instead of a quiet summary that
   // looks like a normal slow day. Otherwise send the usual heartbeat summary.
   // Skipped in TEST_MODE to avoid noise during development.
-  if (process.env.TEST_MODE !== '1' && summary.groupsChecked > 0) {
-    const mostlyFailed = summary.scrapeErrors >= Math.ceil(summary.groupsChecked / 2);
-    if (mostlyFailed) {
+  if (process.env.TEST_MODE !== '1') {
+    // Two kinds of failure both warrant a retry + alert:
+    //  (a) ran but most groups failed to load (mid-run network blip / FB block)
+    //  (b) failed before scraping even started — could not reach the internet,
+    //      Google Sheets, or Facebook (today's case: DNS/connection down). These
+    //      end up here via the outer catch with groupsChecked === 0 and an error.
+    //      Legitimate early exits (wrong hour, weekend, disabled) `return` earlier
+    //      and never reach this block, so errors.length distinguishes real failures.
+    const ranButMostlyFailed = summary.groupsChecked > 0 &&
+      summary.scrapeErrors >= Math.ceil(summary.groupsChecked / 2);
+    const failedBeforeScraping = summary.groupsChecked === 0 && summary.errors.length > 0;
+    const runFailed = ranButMostlyFailed || failedBeforeScraping;
+
+    if (runFailed) {
       // Drop a flag so the next hourly fire retries even outside the schedule.
       scheduleRetry(now);
-      await sendSystemAlert(
-        '⚠️ FB Monitor — Run Mostly Failed',
-        `${summary.scrapeErrors} of ${summary.groupsChecked} groups failed to load this run, so very few or no posts were checked.\n\n` +
-        `This is usually a temporary internet problem on the computer running the monitor, or Facebook briefly blocking requests. ` +
-        `The monitor will automatically try again within the hour — no action needed.\n\n` +
-        `If you see this alert repeatedly, check that the computer has a stable internet connection.`
-      ).catch(err => console.warn('[index] Failure alert failed:', err.message));
-    } else {
+      // Throttle: only alert on the first failure of a streak (no flag yet at start),
+      // so a multi-hour outage does not post an alert every single hour.
+      if (!retryFlagExistedAtStart) {
+        const detail = failedBeforeScraping
+          ? 'The monitor could not connect — the internet, Google Sheets, or Facebook was unreachable — so no groups were checked.'
+          : `${summary.scrapeErrors} of ${summary.groupsChecked} groups failed to load, so very few or no posts were checked.`;
+        await sendSystemAlert(
+          '⚠️ FB Monitor — Run Failed',
+          `${detail}\n\n` +
+          `This is usually a temporary internet problem on the computer running the monitor, or Facebook briefly blocking requests. ` +
+          `The monitor will automatically try again within the hour — no action needed.\n\n` +
+          `If this keeps happening, check that the computer has a stable internet connection.`
+        ).catch(err => console.warn('[index] Failure alert failed:', err.message));
+      } else {
+        console.log('[index] Run failed again — retry already pending, suppressing duplicate alert');
+      }
+    } else if (summary.groupsChecked > 0) {
       // Run succeeded — clear any pending retry so we stop retrying.
       clearRetryFlag();
       await sendRunSummaryAlert(summary).catch(err =>
