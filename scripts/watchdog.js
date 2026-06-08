@@ -14,6 +14,7 @@
 
 require('dotenv').config({ override: true });
 
+const fs         = require('fs');
 const { exec }   = require('child_process');
 const { promisify } = require('util');
 const path       = require('path');
@@ -25,7 +26,39 @@ chromium.use(stealth());
 const execAsync  = promisify(exec);
 const PROFILE_DIR = path.join(__dirname, '..', 'profile');
 
+// Dead-man's switch: alert if no successful scrape in too long during business
+// hours, regardless of cause. Written by index.js on every successful run.
+const LAST_SUCCESS_PATH   = path.join(__dirname, '..', 'data', 'last_success_at.json');
+const STALE_ALERT_PATH    = path.join(__dirname, '..', 'data', 'staleness_alerted.json');
+const STALE_THRESHOLD_HRS = 6;   // no success in this long during business hours = problem
+const STALE_ALERT_EVERY_HRS = 6; // re-alert at most this often, so an outage is not spammy
+
 const { sendSystemAlert, sendSessionExpiredAlert } = require('../src/teams/alert');
+
+// Returns hours since the last successful run, or Infinity if none recorded.
+function hoursSinceLastSuccess(now) {
+  try {
+    const { at } = JSON.parse(fs.readFileSync(LAST_SUCCESS_PATH, 'utf8'));
+    return (now - new Date(at)) / (1000 * 60 * 60);
+  } catch {
+    return Infinity;
+  }
+}
+
+// Throttle the staleness alert so a sustained outage sends it at most every
+// STALE_ALERT_EVERY_HRS, not on every 2-hourly watchdog fire.
+function staleAlertThrottled(now) {
+  try {
+    const { at } = JSON.parse(fs.readFileSync(STALE_ALERT_PATH, 'utf8'));
+    return (now - new Date(at)) / (1000 * 60 * 60) < STALE_ALERT_EVERY_HRS;
+  } catch {
+    return false;
+  }
+}
+
+function markStaleAlerted(now) {
+  try { fs.writeFileSync(STALE_ALERT_PATH, JSON.stringify({ at: now.toISOString() })); } catch (_) {}
+}
 
 // ── PM2 status check ─────────────────────────────────────────────────────────
 
@@ -142,6 +175,34 @@ async function main() {
     console.log('[watchdog] Session check skipped (monitor running or check failed)');
   } else {
     console.log('[watchdog] Session valid ✓');
+  }
+
+  // ── Check 3: dead-man's switch — has a successful run happened recently? ───
+  // Catches ANY silent failure (network outage, FB block, bug) by watching for
+  // the absence of success, not a specific failure type. Only during weekday
+  // business hours so it does not fire overnight or before the day's first run.
+  const now = new Date();
+  const weekday = now.getDay() >= 1 && now.getDay() <= 5;
+  const hour = now.getHours();
+  const inBusinessHours = hour >= 11 && hour <= 21; // after the first run+watchdog cycle
+  const staleHrs = hoursSinceLastSuccess(now);
+
+  if (weekday && inBusinessHours && staleHrs > STALE_THRESHOLD_HRS) {
+    if (staleAlertThrottled(now)) {
+      console.log(`[watchdog] No success in ${staleHrs === Infinity ? 'a long time' : staleHrs.toFixed(1) + 'h'} — alert already sent recently, suppressing`);
+    } else {
+      console.warn(`[watchdog] No successful run in ${staleHrs === Infinity ? 'a long time' : staleHrs.toFixed(1) + 'h'} during business hours — sending alert`);
+      const howLong = staleHrs === Infinity ? 'a long time' : `about ${Math.round(staleHrs)} hours`;
+      await sendSystemAlert(
+        '🛑 FB Monitor — No Successful Runs',
+        `The monitor has not completed a successful run in ${howLong}, even though it should run during business hours.\n\n` +
+        `Likely causes: the computer lost internet, went to sleep, or Facebook is blocking it. The monitor keeps trying automatically, but leads may be getting missed right now.\n\n` +
+        `Please check that the computer is on, awake, and connected to the internet. If it looks fine, double-click "FB Monitor Login" on the Desktop to refresh the session.`
+      ).catch(err => console.error(`[watchdog] Alert failed: ${err.message}`));
+      markStaleAlerted(now);
+    }
+  } else {
+    console.log(`[watchdog] Last success ${staleHrs === Infinity ? 'unknown' : staleHrs.toFixed(1) + 'h ago'} (weekday=${weekday}, businessHours=${inBusinessHours}) — OK`);
   }
 
   console.log('[watchdog] Health check complete');

@@ -19,6 +19,11 @@ const { loadGroupState, saveGroupState } = require('./utils/groupstate');
 const MAX_GROUPS_PER_RUN = 15;
 const ZERO_POSTS_LIMIT = 3;
 const LAST_RUN_PATH = path.join(__dirname, '..', 'data', 'last_run_at.json');
+// Timestamp of the last SUCCESSFUL run (groups actually scraped). Distinct from
+// last_run_at.json, which updates on every fire incl. failures/no-ops. The watchdog
+// uses this as a dead-man's switch: if no success in too long during business hours,
+// something is wrong regardless of cause (network, FB block, bug) and it alerts.
+const LAST_SUCCESS_PATH = path.join(__dirname, '..', 'data', 'last_success_at.json');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -618,8 +623,10 @@ async function main() {
         console.log('[index] Run failed again — retry already pending, suppressing duplicate alert');
       }
     } else if (summary.groupsChecked > 0) {
-      // Run succeeded — clear any pending retry so we stop retrying.
+      // Run succeeded — clear any pending retry so we stop retrying, and record the
+      // success timestamp for the watchdog's dead-man's switch.
       clearRetryFlag();
+      try { fs.writeFileSync(LAST_SUCCESS_PATH, JSON.stringify({ at: new Date().toISOString() })); } catch (_) {}
       await sendRunSummaryAlert(summary).catch(err =>
         console.warn('[index] Run summary alert failed:', err.message)
       );
