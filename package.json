@@ -5,9 +5,19 @@
   "main": "src/index.js",
   "license": "MIT",
   "keywords": ["facebook", "lead-generation", "microsoft-teams", "google-sheets", "claude", "automation", "playwright"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vinsanitycoder/fb-groups-monitor.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node src/index.js",
-    "login": "node scripts/login.js"
+    "login": "node scripts/login.js",
+    "watchdog": "node scripts/watchdog.js",
+    "setup-shortcut": "bash scripts/setup-shortcut.sh",
+    "check-keywords": "node scripts/check-keywords.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
